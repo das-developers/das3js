@@ -16,8 +16,16 @@
  * before it can report anything.
  *
  * Usage: node test/browser/run.mjs [page.html] [--keep] [--dasflex=DIR] [--serve]
- *        [--timeout=SECONDS] [--app=DIR]
- *   page defaults to TestModule.html, --keep leaves the profile dir behind.
+ *        [--timeout=SECONDS] [--app=DIR | --vite-dev=DIR]
+ *
+ *   page is a path on the server, not on disk.  The server maps URL
+ *   prefixes to directories (MOUNTS below: /test/ is test/browser, /das2C/
+ *   the das2C checkout, ...), and page is opened under /test/, so
+ *   `run.mjs index.html` opens test/browser/index.html.  With --app or
+ *   --vite-dev, page is opened from DIR instead.  The default page is
+ *   TestModule.html.
+ *
+ *   --keep leaves the Firefox profile directory behind.
  *   --dasflex starts test/dasflex_cgi.py over the dasFlex build tree in DIR
  *   (default ../dasflex) and tells the page about it with
  *   ?server=local&port=N, so a live-style test can run with no network.
@@ -32,13 +40,19 @@
  *   writes its output for the root of a site, and the other mounts stay
  *   reachable, so the app fetches fixtures from /das2C/ and reports to /log
  *   and /done like any test page.
+ *   --vite-dev is --app for a Vite project's sources instead of its build:
+ *   paths no mount claims go to Vite's dev server, run in middleware mode
+ *   inside this one.  Vite comes from DIR/node_modules, the consumer's own
+ *   copy.  This is what `npx vite` does for a developer, including the
+ *   dependency pre-bundling that moves das3js's files somewhere else, minus
+ *   live reload (nothing edits files during a test).
  */
 
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
@@ -118,6 +132,21 @@ const appArg = args.find(a => a.startsWith('--app='));
 if(appArg)
 	MOUNTS.push(['/', path.resolve(appArg.slice('--app='.length))]);
 
+const viteArg = args.find(a => a.startsWith('--vite-dev='));
+let vite = null;
+if(viteArg){
+	const dir = path.resolve(viteArg.slice('--vite-dev='.length));
+	/* import() of a file URL rather than of 'vite': a bare name resolves
+	 * from this file's directory, which has no node_modules */
+	const viteMod = pathToFileURL(path.join(dir, 'node_modules', 'vite', 'dist', 'node', 'index.js'));
+	const {createServer} = await import(viteMod.href);
+	vite = await createServer({
+		root: dir,
+		appType: 'spa',          /* serve and transform index.html, as `vite` does */
+		server: {middlewareMode: true, hmr: false},
+	});
+}
+
 let done = false;
 let pass = false;
 let firefox = null;
@@ -131,6 +160,7 @@ function finish(ok, why)
 	if(why) console.log((ok ? 'INFO: ' : 'ERROR: ') + why);
 	if(firefox) firefox.kill();
 	if(dasflex) dasflex.kill();
+	if(vite) vite.close();
 	server.close();
 }
 
@@ -209,6 +239,12 @@ const server = http.createServer(async (req, res) => {
 		res.end(data);
 		return;
 	}
+	/* Vite answers 404 itself for what it doesn't know, so the fallback
+	 * here only runs if its middleware stack passes a request on */
+	if(vite){
+		vite.middlewares(req, res, () => res.writeHead(404, extra).end('not found: ' + url.pathname));
+		return;
+	}
 	res.writeHead(404, extra).end('not found: ' + url.pathname);
 });
 
@@ -223,7 +259,7 @@ server.on('error', e => {
 
 server.listen(listenPort, '127.0.0.1', async () => {
 	const port = server.address().port;
-	let target = appArg ? `http://127.0.0.1:${port}/${page}`
+	let target = (appArg || viteArg) ? `http://127.0.0.1:${port}/${page}`
 	                    : `http://127.0.0.1:${port}/test/${page}`;
 
 	if(dasflexArg){

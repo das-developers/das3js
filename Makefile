@@ -45,10 +45,14 @@
 # make live_test  Run in a headless browser, but against the live dasFlex
 #                 server at space.physics.uiowa.edu
 #
+# make pack       Write the npm package, build.wasm32/das3js-VERSION.tgz,
+#                 the file `npm publish` would upload
+#
 # make pack_test  Pack the npm tarball and install it into the consumer
 #                 projects under test/npm (Vite, webpack, a bare import map
-#                 page), build each and run it in a headless browser.  First
-#                 time, run `npm install` in each test/npm/* directory to
+#                 page), build each and run it in a headless browser, and
+#                 run the Vite app under Vite's dev server too.  A new
+#                 consumer needs one `npm install` in its directory to
 #                 download its tools and write its lockfile.
 #
 # make server     Start a node server at http://127.0.0.1:9099 with an index
@@ -217,7 +221,8 @@ help:
 	@echo '  make test            run our tests under node'
 	@echo '  make headless_test   run the module in headless Firefox, local fixtures'
 	@echo '  make live_test       same, against space.physics.uiowa.edu'
-	@echo '  make pack_test       npm pack, install into test/npm consumers, run them'
+	@echo '  make pack            write the npm package, $(PACK)'
+	@echo '  make pack_test       install the package into test/npm consumers, run them'
 	@echo '  make server          serve test pages on http://127.0.0.1:9099'
 	@echo '  make dist            stage the pages as a static site in $(WBD)/site'
 	@echo '  make clean           remove our and das2C build output, keep downloads'
@@ -272,23 +277,29 @@ headless_test: module
 
 ## Package ###################################################################
 
-# What a downstream developer gets from npm: `npm pack` writes the tarball
-# the registry would serve, from the "files" list in package.json.  Each
-# consumer installs it without recording it (--no-save), so package.json and
-# the lockfile there list only the consumer's own tools and stay unchanged
-# from run to run.  The tarball is renamed to drop its version, which would
-# otherwise have to be spelled out here.
-#
-# npm ci installs exactly what the lockfile says and fails without one,
-# hence the one time `npm install` per consumer noted in the header.
-NPM_CONSUMERS=vite webpack importmap
-PACK=tmp/das3js.tgz
+# What a downstream developer gets from npm.  `npm pack` writes the tarball
+# the registry would serve, from the "files" list in package.json: npm's
+# counterpart of a Python wheel, prebuilt wasm and all, and the file
+# `npm publish` uploads.  It is a build product, so it lands in $(WBD) and
+# make clean removes it.  The version comes from package.json, which is
+# the one place it is written down.
+VERSION:=$(shell sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json)
+PACK=$(WBD)/das3js-$(VERSION).tgz
 
-pack_test: module
-	mkdir -p tmp
-	rm -f tmp/das3js*.tgz
-	cd tmp && $(NODE_PATH_PFX) $(NPM) pack --silent $(CURDIR) > /dev/null
-	mv tmp/das3js-*.tgz $(PACK)
+pack: $(PACK)
+
+$(PACK): $(MODULE) $(JS_OUT) package.json README.md LICENSE | $(WBD)
+	rm -f $(WBD)/das3js-*.tgz
+	$(NODE_PATH_PFX) $(NPM) pack --silent --pack-destination $(WBD) > /dev/null
+
+# Each consumer installs the tarball without recording it (--no-save), so
+# package.json and the lockfile there list only the consumer's own tools
+# and stay unchanged from run to run.  npm ci installs exactly what the
+# lockfile says and fails without one, hence the one time `npm install` per
+# consumer noted in the header.
+NPM_CONSUMERS=vite webpack importmap
+
+pack_test: $(PACK)
 	for c in $(NPM_CONSUMERS); do \
 	  (cd test/npm/$$c && $(NODE_PATH_PFX) $(NPM) ci --silent && \
 	   $(NODE_PATH_PFX) $(NPM) install --no-save --silent $(CURDIR)/$(PACK)) || exit 1; \
@@ -296,6 +307,8 @@ pack_test: module
 	cd test/npm/vite && $(NODE_PATH_PFX) $(NPM) run --silent build
 	cd test/npm/webpack && $(NODE_PATH_PFX) $(NPM) run --silent build
 	$(NODE) test/browser/run.mjs index.html --app=test/npm/vite/dist
+	rm -rf test/npm/vite/node_modules/.vite
+	$(NODE) test/browser/run.mjs index.html --vite-dev=test/npm/vite
 	$(NODE) test/browser/run.mjs index.html --app=test/npm/webpack
 	$(NODE) test/browser/run.mjs index.html --app=test/npm/importmap
 
@@ -378,4 +391,4 @@ distclean: clean
 	$(MAKE) $(DAS2C_WASM_ARGS) distclean
 
 FORCE:
-.PHONY: all help test module headless_test live_test local_test pack_test server dist deps deps_test clean distclean FORCE
+.PHONY: all help test module headless_test live_test local_test pack pack_test server dist deps deps_test clean distclean FORCE

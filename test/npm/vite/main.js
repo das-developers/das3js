@@ -1,8 +1,15 @@
 /* A downstream app as a Vite user writes one: import das3js by its package
  * name and nothing else.  No Vite configuration at all, on purpose.  The
- * question this answers is whether `vite build` finds das2c.wasm through
- * the module's own `new URL('das2c.wasm', import.meta.url)`, copies it into
- * dist/ and points the URL at the copy.
+ * question this answers is whether Vite finds das2c.wasm through the
+ * module's own `new URL('das2c.wasm', import.meta.url)`, both ways a
+ * developer meets it:
+ *
+ *   - `vite build` must copy the .wasm into dist/ and point the URL at the
+ *     copy.
+ *   - The dev server pre-bundles das3js into node_modules/.vite/deps/, a
+ *     different directory, and must point the URL back at the original.
+ *     A Vite that doesn't needs das3js listed under optimizeDeps.exclude
+ *     in the app's vite.config.js, so pre-bundling leaves it in place.
  *
  * The rest is the test protocol of test/browser/run.mjs: POST log lines to
  * /log and the verdict to /done, and read the stream fixture from /das2C/,

@@ -56,6 +56,7 @@ In run order; when working only on das3js code, skip the `deps` rows.
 | `make headless_test` | the module in headless Firefox, fixtures      | `All module checks passed`                        |
 | `make live_test`     | same, against space.physics.uiowa.edu         | `All live checks passed`                          |
 | `make local_test`    | same, against the dasFlex checkout next door  | `All live checks passed`                          |
+| `make pack_test`     | the npm package in Vite, webpack, plain page  | `page reported success`, once per run (four)      |
 
 `make deps_test` is the slow one, mostly das2C's `TestFeed`, and das2C's
 own CI runs it at the pinned commit; run it when das2C is the suspect.
@@ -74,6 +75,73 @@ and two tools:
   separately from the network.
 
 `make server PAGE=Perf.html` opens straight onto one page.
+
+## The npm package
+
+    make pack
+
+writes `build.wasm32/das3js-VERSION.tgz`, the file `npm publish` would
+upload: the three module files plus README, LICENSE and package.json, as
+listed under `"files"` in package.json.  The version is read from
+package.json.  `npm pack --dry-run` lists the contents without writing
+anything.
+
+### Consumer tests
+
+A downstream developer installs that tarball into their own project and
+builds it with their own tools.  `test/npm/` holds one small project for
+each common setup, so the package is checked the way it is used:
+
+  * `vite/` - a Vite app, run both as a production build and under
+    Vite's dev server
+  * `webpack/` - a webpack app
+  * `importmap/` - a plain page with no build tools, as a CDN user would
+    write it
+
+None of them configures anything for das3js; the README's install notes
+are true only while these pass.  Each loads das2C's ex08 fixture and
+passes if all 13 datasets parse.
+
+`make pack_test` packs, installs the tarball into each project, builds
+them, and runs each in headless Firefox.  The tools themselves (Vite,
+webpack) come from each project's own lockfile.  A new project, or a
+fresh lockfile after changing a tool's version, needs one `npm install`
+in its directory first, which downloads the tools.
+
+npm and the tools run under whichever `node` is first on PATH, and
+sourcing emsdk does not put its own Node there.  Where the system Node
+is too old for Vite (it wants 20.19 or newer), put emsdk's first.  The
+Makefile does this itself; for commands by hand:
+
+    export PATH=$(dirname $EMSDK_NODE):$PATH
+
+The steps `make pack_test` takes, to run one at a time:
+
+    make pack
+    cd test/npm/vite
+    npm ci                                          # tools, from the lockfile
+    npm install --no-save ../../../build.wasm32/das3js-*.tgz
+    npm run build                                   # vite and webpack only
+    cd ../../..
+
+    node test/browser/run.mjs index.html --app=test/npm/vite/dist   # Vite build
+    node test/browser/run.mjs index.html --vite-dev=test/npm/vite   # Vite dev server
+    node test/browser/run.mjs index.html --app=test/npm/webpack
+    node test/browser/run.mjs index.html --app=test/npm/importmap
+
+`--no-save` keeps the tarball out of the project's package.json and
+lockfile, so they list only the project's tools.  `--app=DIR` serves a
+project's page at the site root, and `--vite-dev=DIR` runs the project's
+own Vite dev server inside the runner; either way the fixtures under
+`/das2C/` stay reachable.  Before a dev server run, `rm -rf
+test/npm/vite/node_modules/.vite` makes Vite pre-bundle das3js from
+scratch, as `make pack_test` does.
+
+Add `--serve` to any of the four to watch the page in your own browser
+instead: it prints the URL, the devtools network tab shows where
+`das2c.wasm` came from, and Ctrl-C stops it.  Don't use `npx vite` in
+`test/npm/vite` for this: Vite's own server knows nothing of the
+fixtures or the test reporting, so the page fails.
 
 ## Putting the pages on a web server
 
