@@ -1,6 +1,6 @@
 {
 	"name": "das3js",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"private": true,
 	"description": "Read das streams and walk das catalogs in web browsers: das2C compiled to WebAssembly",
 	"license": "SEE LICENSE IN LICENSE",

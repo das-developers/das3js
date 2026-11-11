@@ -1,0 +1,5 @@
+{
+	"name": "das3js-consumer-importmap",
+	"private": true,
+	"description": "No build tools: only here so npm can install the das3js tarball into node_modules"
+}

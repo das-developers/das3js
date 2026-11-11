@@ -16,7 +16,7 @@
  * before it can report anything.
  *
  * Usage: node test/browser/run.mjs [page.html] [--keep] [--dasflex=DIR] [--serve]
- *        [--timeout=SECONDS]
+ *        [--timeout=SECONDS] [--app=DIR]
  *   page defaults to TestModule.html, --keep leaves the profile dir behind.
  *   --dasflex starts test/dasflex_cgi.py over the dasFlex build tree in DIR
  *   (default ../dasflex) and tells the page about it with
@@ -27,6 +27,11 @@
  *   It listens on a fixed port (SERVE_PORT below, or --port=N) so the URL
  *   can be bookmarked; the headless runs take an ephemeral port so they
  *   never collide with a serve session or with each other.
+ *   --app serves DIR at the site root and opens page from there instead of
+ *   from test/browser.  For the npm consumer apps in test/npm: a bundler
+ *   writes its output for the root of a site, and the other mounts stay
+ *   reachable, so the app fetches fixtures from /das2C/ and reports to /log
+ *   and /done like any test page.
  */
 
 import http from 'node:http';
@@ -107,6 +112,11 @@ const portArg = args.find(a => a.startsWith('--port='));
 const listenPort = serve ? (portArg ? Number(portArg.split('=')[1]) : SERVE_PORT) : 0;
 const page = args.find(a => !a.startsWith('--')) || 'TestModule.html';
 const dasflexArg = args.find(a => a.startsWith('--dasflex'));
+const appArg = args.find(a => a.startsWith('--app='));
+
+/* Last, so the named mounts above win; '/' matches every path */
+if(appArg)
+	MOUNTS.push(['/', path.resolve(appArg.slice('--app='.length))]);
 
 let done = false;
 let pass = false;
@@ -213,7 +223,8 @@ server.on('error', e => {
 
 server.listen(listenPort, '127.0.0.1', async () => {
 	const port = server.address().port;
-	let target = `http://127.0.0.1:${port}/test/${page}`;
+	let target = appArg ? `http://127.0.0.1:${port}/${page}`
+	                    : `http://127.0.0.1:${port}/test/${page}`;
 
 	if(dasflexArg){
 		const dir = dasflexArg.includes('=') ? dasflexArg.split('=')[1] : path.join(ROOT, '..', 'dasflex');

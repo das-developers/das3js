@@ -45,6 +45,12 @@
 # make live_test  Run in a headless browser, but against the live dasFlex
 #                 server at space.physics.uiowa.edu
 #
+# make pack_test  Pack the npm tarball and install it into the consumer
+#                 projects under test/npm (Vite, webpack, a bare import map
+#                 page), build each and run it in a headless browser.  First
+#                 time, run `npm install` in each test/npm/* directory to
+#                 download its tools and write its lockfile.
+#
 # make server     Start a node server at http://127.0.0.1:9099 with an index
 #                 of the test pages and tools, Ctrl-C stops the server.
 #                 Add RUNFLAGS=--dasflex to run the sibling ../dasflex
@@ -75,6 +81,17 @@ NODE:=node
 else
 NODE:=$(EMSDK_NODE)
 endif
+endif
+
+# npm from beside that node: the consumer tools (Vite 8 wants node 20.19 or
+# later) run under whichever node is first on PATH, so put that one first
+# too.  A bare `node` means nothing to prepend.
+ifeq ($(findstring /,$(NODE)),)
+NPM:=npm
+NODE_PATH_PFX:=
+else
+NPM:=$(dir $(NODE))npm
+NODE_PATH_PFX:=PATH=$(dir $(NODE)):$$PATH
 endif
 
 # das2C's wasm build is its own makefile, use -C first, so the -f path and
@@ -115,7 +132,7 @@ WASM_TEST_LFLAGS=--use-port=zlib -sENVIRONMENT=node -sNODERAWFS=1 \
 # The shipped module carries no debug info.
 #
 # -g at this link would keep the DWARF from every sub-module, making das2c.wasm
-# about 2.2 MB instead of 450 KB.  DEBUG=yes puts it back for stepping through
+# several times larger.  DEBUG=yes puts it back for stepping through
 # the C in a browser debugger, and is why the module link keeps the warning
 # waiver too.
 #
@@ -200,6 +217,7 @@ help:
 	@echo '  make test            run our tests under node'
 	@echo '  make headless_test   run the module in headless Firefox, local fixtures'
 	@echo '  make live_test       same, against space.physics.uiowa.edu'
+	@echo '  make pack_test       npm pack, install into test/npm consumers, run them'
 	@echo '  make server          serve test pages on http://127.0.0.1:9099'
 	@echo '  make dist            stage the pages as a static site in $(WBD)/site'
 	@echo '  make clean           remove our and das2C build output, keep downloads'
@@ -251,6 +269,35 @@ endif
 headless_test: module
 	$(NODE) test/browser/run.mjs
 	$(NODE) test/browser/run.mjs 'Catalog.html?check=1'
+
+## Package ###################################################################
+
+# What a downstream developer gets from npm: `npm pack` writes the tarball
+# the registry would serve, from the "files" list in package.json.  Each
+# consumer installs it without recording it (--no-save), so package.json and
+# the lockfile there list only the consumer's own tools and stay unchanged
+# from run to run.  The tarball is renamed to drop its version, which would
+# otherwise have to be spelled out here.
+#
+# npm ci installs exactly what the lockfile says and fails without one,
+# hence the one time `npm install` per consumer noted in the header.
+NPM_CONSUMERS=vite webpack importmap
+PACK=tmp/das3js.tgz
+
+pack_test: module
+	mkdir -p tmp
+	rm -f tmp/das3js*.tgz
+	cd tmp && $(NODE_PATH_PFX) $(NPM) pack --silent $(CURDIR) > /dev/null
+	mv tmp/das3js-*.tgz $(PACK)
+	for c in $(NPM_CONSUMERS); do \
+	  (cd test/npm/$$c && $(NODE_PATH_PFX) $(NPM) ci --silent && \
+	   $(NODE_PATH_PFX) $(NPM) install --no-save --silent $(CURDIR)/$(PACK)) || exit 1; \
+	done
+	cd test/npm/vite && $(NODE_PATH_PFX) $(NPM) run --silent build
+	cd test/npm/webpack && $(NODE_PATH_PFX) $(NPM) run --silent build
+	$(NODE) test/browser/run.mjs index.html --app=test/npm/vite/dist
+	$(NODE) test/browser/run.mjs index.html --app=test/npm/webpack
+	$(NODE) test/browser/run.mjs index.html --app=test/npm/importmap
 
 # Same runner, real server: needs the network and a public dasFlex that is up
 live_test: module
@@ -331,4 +378,4 @@ distclean: clean
 	$(MAKE) $(DAS2C_WASM_ARGS) distclean
 
 FORCE:
-.PHONY: all help test module headless_test live_test local_test server dist deps deps_test clean distclean FORCE
+.PHONY: all help test module headless_test live_test local_test pack_test server dist deps deps_test clean distclean FORCE

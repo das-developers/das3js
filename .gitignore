@@ -4,3 +4,4 @@ node_modules/
 co_notes
 tmp/
 CLAUDE.md
+test/npm/*/dist/

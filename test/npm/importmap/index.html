@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>das3js from npm, no build tools</title>
+
+<!-- An import map gives a bare name like 'das3js' a URL, which is what
+     bundlers otherwise work out from node_modules.  Here it points into the
+     unpacked package, the layout a CDN serves.  From jsDelivr the URL would
+     be https://cdn.jsdelivr.net/npm/das3js@0.1.0/build.wasm32/das3js.mjs and
+     nothing else on this page would change.  das2c.mjs and das2c.wasm are
+     found beside das3js.mjs, so only the entry point is mapped. -->
+<script type="importmap">
+{
+	"imports": {
+		"das3js": "./node_modules/das3js/build.wasm32/das3js.mjs"
+	}
+}
+</script>
+</head>
+<body>
+<script type="module">
+/* The same check as the other consumers under test/npm, inline since there
+ * is no bundler to collect files.  Protocol: test/browser/run.mjs. */
+
+import {load} from 'das3js';
+
+const WHO = 'importmap';
+const FIXTURE = '/das2C/examples/ex08_cassini_rpws_survey.d2t';
+const DATASETS = 13;
+
+async function log(line)
+{
+	console.log(line);
+	await fetch('/log', {method: 'POST', body: line});
+}
+
+let pass = false;
+try{
+	const das3 = await load();
+	const strm = await das3.fetchStream(FIXTURE);
+	const nDs = strm.length;
+	const nRecs = strm.dataset(0).shape[0];
+	strm.free();
+
+	pass = (nDs === DATASETS) && (nRecs > 0);
+	await log(`${pass ? 'INFO' : 'ERROR'}: ${WHO}: ${nDs} datasets `
+		+ `(expected ${DATASETS}), ${nRecs} records in the first`);
+}
+catch(e){
+	await log(`ERROR: ${WHO}: ${e.message}`);
+}
+await fetch('/done', {method: 'POST', body: JSON.stringify({pass})});
+</script>
+</body>
+</html>
