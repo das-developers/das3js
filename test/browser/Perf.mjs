@@ -38,7 +38,7 @@
  * searched for the usual das server time parameters.  The parse+paint
  * runs repaint the same picture off screen; only their timing is shown. */
 
-import {load, DasError} from '../build/das2js.mjs';
+import {load, DasError} from '../build/das3js.mjs';
 
 const form = document.getElementById('form');
 const urlBox = document.getElementById('url');

@@ -1,8 +1,8 @@
-# das2js makefile: wraps emsdk and other build tools in a gnumake interface
+# das3js makefile: wraps emsdk and other build tools in a gnumake interface
 #
 # Dependency Tree
 # ---------------
-# das2js
+# das3js
 #  |
 #  +- das2C: Stream parsing, catalog request parsing (LGPL)
 #      |
@@ -29,12 +29,12 @@
 #
 # make deps_test  Run das2C's test suite under node
 #
-# make            Build the browser module (das2js.mjs, das2c.mjs, das2c.wasm)
+# make            Build the browser module (das3js.mjs, das2c.mjs, das2c.wasm)
 #                 and our node test program, runs nothing.  Use DEBUG=yes
 #                 to retain debug info, not recommended, it increases module
 #                 size by a factor of 5.
 #
-# make test       Run das2js test programs under node.js
+# make test       Run das3js test programs under node.js
 #
 # make headless_test
 #                 Run the module in a headless browser against local test
@@ -54,7 +54,7 @@
 #                 in build.wasm32/site, ready to copy to a web server.  Add
 #                 HTPASSWD=/server/path/.htpasswd for a basic-auth password.
 #
-# make clean      Delete das2js build output and das2C's, keeping das2C's
+# make clean      Delete das3js build output and das2C's, keeping das2C's
 #                 downloaded dependencies
 #
 # make distclean  Remove all build products, and all downloads in
@@ -142,7 +142,7 @@ endif
 #  * HEAPU8 and HEAP32 to reach the heap.
 #
 # The other typed views (HEAP16, HEAPF64, HEAP64...) are not exported because
-# das2js.mjs builds its own TypedArrays over HEAPU8.buffer, so BigInt64Array
+# das3js.mjs builds its own TypedArrays over HEAPU8.buffer, so BigInt64Array
 # over TT2000 values needs nothing extra here, not even WASM_BIGINT (no glue
 # signature carries an int64 across the call boundary).
 #
@@ -160,11 +160,11 @@ endif
 DAS2C_EXPORTS=\
  new_DasNode_json del_DasNode \
  new_DasNodeWalk new_DasNodeWalk_seed del_DasNodeWalk DasNodeWalk_state \
- DasNodeWalk_urlCount DasNodeWalk_url DasNodeWalk_uri DasNodeWalk_feed \
+ DasNodeWalk_numUrls DasNodeWalk_urlAt DasNodeWalk_uri DasNodeWalk_feed \
  DasNodeWalk_fail DasNodeWalk_result DasNodeWalk_nearest \
  new_DasSrc_node del_DasSrc DasSrc_title DasSrc_needsAuth DasSrc_authRealm \
- DasSrc_exampleCount DasSrc_exampleLabel DasSrc_newReq DasSrc_mime \
- DasStreamSrc_url \
+ DasSrc_numExamples DasSrc_exampleLblAt new_DasReq_src DasSrc_mime \
+ DasSrc_reqUrl \
  del_DasReq DasReq_set
 
 # emcc wants one comma separated list with a leading underscore on each name
@@ -279,7 +279,7 @@ server: module
 # directory is otherwise mostly dead weight.
 #
 # Deploy with a plain copy, e.g.
-#   rsync -a --delete build.wasm32/site/ host:/var/www/html/das2js/
+#   rsync -a --delete build.wasm32/site/ host:/var/www/html/das3js/
 #
 # HTPASSWD is a path on the SERVER; Apache reads it there.  Create the file
 # there too, with: htpasswd -c /that/path/.htpasswd someuser
@@ -320,8 +320,8 @@ deps_test: deps
 $(WBD):
 	mkdir -p $@
 
-# das2C is still in flux, clean it too, its objects don't notice
-# compile flag changes, and they rebuild quickly.  Keep the downloads.
+# Clean das2C too: its objects don't notice compile flag changes, and they
+# rebuild quickly.  Keep the downloads.
 clean:
 	rm -rf build.*
 	$(MAKE) $(DAS2C_WASM_ARGS) clean

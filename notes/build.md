@@ -1,4 +1,4 @@
-# Building and testing das2js
+# Building and testing das3js
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ needs it again.
 
     make module
 
-The deliverable is three files in `build.wasm32/`: `das2js.mjs` (the module
+The deliverable is three files in `build.wasm32/`: `das3js.mjs` (the module
 you import), `das2c.mjs` (its loader) and `das2c.wasm`.  Keep them together.
 
 `make clean module DEBUG=yes` builds a version that keeps the C debug
@@ -47,7 +47,7 @@ five times larger, so rebuild without it before deploying.
 
 Each target builds what it needs.  ERROR lines inside a run are expected
 when the run says they are intentional; the success line is the verdict.
-In run order; when working only on das2js code, skip the `deps` rows.
+In run order; when working only on das3js code, skip the `deps` rows.
 
 | Command              | What it runs                                  | Success line                                      |
 |----------------------|-----------------------------------------------|---------------------------------------------------|
@@ -80,7 +80,7 @@ and two tools:
 Everything is static files; the browser does the work.
 
     make dist HTPASSWD=/server/path/.htpasswd
-    rsync -a --delete build.wasm32/site/ host:/web/dir/das2js/
+    rsync -a --delete build.wasm32/site/ host:/web/dir/das3js/
 
 * `build.wasm32/site/` is about 15 MB.  Most of that is one fixture,
   ex08.  The tree has the same layout `make server` uses, so it works

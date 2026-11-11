@@ -1,4 +1,4 @@
-# das2js
+# das3js
 
 Das servers typically provide data relevant to space plasma and magnetospheric
 physics research.  To retrieve data, an HTTP GET request is posted to a das
@@ -11,14 +11,14 @@ views of the decoded values without a conversion pass.
 
 
 **Early days, but it runs.**  `make` produces a three-file ES module
-in `build.wasm32/` (`das2js.mjs`, `das2c.mjs`, `das2c.wasm`) that fetches a
+in `build.wasm32/` (`das3js.mjs`, `das2c.mjs`, `das2c.wasm`) that fetches a
 das stream, parses it as it arrives, and hands back decoded values, int64 and 
 all.  It has read real data from a public dasFlex server in Firefox.  No package,
 no minified build, no catalog browser, no plotting; a progress meter, a source
 picker, a catalog tree view and a live spectrogram are the planned demos. 
 Layout:
 
-  * `src/` - the ES modules: `das2js.mjs`, the core, and
+  * `src/` - the ES modules: `das3js.mjs`, the core, and
     `das-catalog-tree.mjs`, a `<das-catalog-tree>` element
   * `glue/` - a small flat C interface over das2C, the wasm export surface
   * `test/` - the glue test (wasm under node) and the browser tests

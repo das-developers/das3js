@@ -2,14 +2,14 @@
  *
  * Answers "if I point at this data source, what do I have to work with?"
  * The whole page is JSON.stringify(stream, null, 2); every handle class in
- * das2js.mjs has a toJSON() that returns its structure as plain data, so
+ * das3js.mjs has a toJSON() that returns its structure as plain data, so
  * nothing here knows the dataset model.  The URL comes from the form or
  * from ?url=... so a stream can be bookmarked.
  *
  * A 401 brings up a login form, and the fetch is retried with an
  * Authorization header; see "Logins" below. */
 
-import {load, DasError, basicAuth} from '../build/das2js.mjs';
+import {load, DasError, basicAuth} from '../build/das3js.mjs';
 
 const out = document.getElementById('out');
 const status = document.getElementById('status');

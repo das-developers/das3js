@@ -1,9 +1,9 @@
 /* Copyright (C) 2026 Chris Piker
  *
- * This file is part of das2js, das stream utilities for browsers.
+ * This file is part of das3js, das stream utilities for browsers.
  * See the LICENSE file in the repository root for terms.
  *
- * das2js statically links das2C, which is LGPL 2.1; distributions of the
+ * das3js statically links das2C, which is LGPL 2.1; distributions of the
  * compiled WebAssembly module carry das2C's terms as well as these.
  */
 
@@ -16,9 +16,9 @@
  * output is an RGBA8 buffer for a canvas to blit.  Its job is to make
  * a performance test show the data arriving instead of a byte count.
  *
- * The renderer is a StreamHandler riding on a DasWasmRdr, after the
- * dataset builder.  It never feeds, owns or clears data; it reads what
- * the builder keeps.
+ * The renderer is a DasIOProc riding on a DasWasmRdr, after the reader's
+ * own processor.  It never feeds, owns or clears data; it reads what the
+ * reader keeps.
  *
  * Kind of picture, decided once from the FIRST dataset header:
  *
@@ -32,7 +32,7 @@
  *     color is log(count) of samples per pixel.  No fill-in.
  *
  * Later datasets are painted only if they have the same physical
- * dimensions as the first (DasDim_dim names, coordinate and data).
+ * dimensions as the first (DasDim_physDim names, coordinate and data).
  * Others are counted in DasRender_skipped() and otherwise ignored.
  *
  * Ranges:
@@ -130,7 +130,7 @@ DAS_WASM_API int DasRender_setX(DasRender* pThis, const char* sBeg, const char* 
  * @returns 0 or a positive error code
  * @memberof DasRender
  */
-DAS_WASM_API int DasRender_setMap(DasRender* pThis, const ubyte* pRgba);
+DAS_WASM_API int DasRender_setMap(DasRender* pThis, const uint8_t* pRgba);
 
 /** Start painting what this reader reads.
  *
@@ -155,7 +155,7 @@ DAS_WASM_API int DasRender_kind(const DasRender* pThis);
  *          by the renderer.  Re-view each frame, see the file notes.
  * @memberof DasRender
  */
-DAS_WASM_API const ubyte* DasRender_colorize(DasRender* pThis);
+DAS_WASM_API const uint8_t* DasRender_colorize(DasRender* pThis);
 
 /** Nonzero if anything was painted since the last colorize.  Lets the
  * display timer skip a frame with nothing new. */

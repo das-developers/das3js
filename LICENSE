@@ -22,7 +22,7 @@ SOFTWARE.
 
 ----
 
-Note: das2js source code is MIT licensed, however the compiled WebAssembly
+Note: das3js source code is MIT licensed, however the compiled WebAssembly
 module statically incorporates das2C, which is distributed under the GNU
 Lesser General Public License version 2.1.  Distributions of the compiled
 module are subject to das2C's terms in addition to the terms above; since

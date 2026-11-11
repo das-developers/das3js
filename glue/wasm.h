@@ -1,9 +1,9 @@
 /* Copyright (C) 2026 Chris Piker
  *
- * This file is part of das2js, das stream utilities for browsers.
+ * This file is part of das3js, das stream utilities for browsers.
  * See the LICENSE file in the repository root for terms.
  *
- * das2js statically links das2C, which is LGPL 2.1; distributions of the
+ * das3js statically links das2C, which is LGPL 2.1; distributions of the
  * compiled WebAssembly module carry das2C's terms as well as these.
  */
 
@@ -57,8 +57,7 @@
  */
 
 #include <das3/io.h>
-#include <das3/builder.h>
-#include <das3/dataset.h>
+#include <das3/datset.h>
 #include <das3/source.h>
 
 #ifdef __cplusplus
@@ -91,8 +90,17 @@ extern "C" {
  */
 DAS_WASM_API void daswasm_init(const char* sProgName);
 
-/** The text of the most recent das2C error, or an empty string. */
+/** The text of the most recent das2C error, or an empty string.
+ *
+ * The text stays until the next error or daswasm_clearError(), so on its
+ * own it may describe an older call: not every failure goes through the
+ * error path (some only log, some just return NULL).  Clear before a call
+ * whose failure you intend to report, and an empty answer afterwards means
+ * "failed without saying why" rather than someone else's message. */
 DAS_WASM_API const char* daswasm_lastError(void);
+
+/** Forget the saved error text, see daswasm_lastError(). */
+DAS_WASM_API void daswasm_clearError(void);
 
 /** The shape sentinel meaning an index is ragged (varies with prior
  * indices).  Appears in daswasm_ds_shapeAt, daswasm_var_shapeAt and
@@ -110,7 +118,7 @@ DAS_WASM_API int daswasm_idxUnused(void);
 DAS_WASM_API int daswasm_idxBorrow(void);
 
 /* ************************************************************************ */
-/** Stream reader context: a feed-mode DasIO coupled to a DasDsBldr, plus
+/** Stream reader context: a feed-mode DasIO that keeps every record, plus
  * capture of out-of-band progress and exception packets, so a foreign
  * caller needs no callback plumbing at all -- push bytes, poll state.
  *
@@ -138,7 +146,7 @@ DAS_WASM_API DasWasmRdr* new_DasWasmRdr(void);
  *          stream is bad every further call reports the failure.
  * @memberof DasWasmRdr
  */
-DAS_WASM_API int DasWasmRdr_feed(DasWasmRdr* pThis, const ubyte* pData, int nLen);
+DAS_WASM_API int DasWasmRdr_feed(DasWasmRdr* pThis, const uint8_t* pData, int nLen);
 
 /** Signal end of input.
  *
@@ -160,6 +168,9 @@ DAS_WASM_API DasStream* DasWasmRdr_stream(DasWasmRdr* pThis);
  *
  * After this call deleting the reader leaves the stream and all of its
  * datasets alive; release them later with daswasm_stream_free().
+ *
+ * Only after DasWasmRdr_end(): das2C refuses to hand over a stream that is
+ * still being read, and NULL comes back (see daswasm_lastError).
  * @memberof DasWasmRdr
  */
 DAS_WASM_API DasStream* DasWasmRdr_take(DasWasmRdr* pThis);
@@ -190,11 +201,11 @@ DAS_WASM_API const char* DasWasmRdr_exception(const DasWasmRdr* pThis);
  */
 DAS_WASM_API void del_DasWasmRdr(DasWasmRdr* pThis);
 
-/** Hook another stream processor onto the reader, after the dataset builder.
+/** Hook another stream processor onto the reader, after its own.
  *
  * For C modules linked into the same program, src/render.c first among
  * them.  Not exported: a foreign runtime has no way to build a
- * StreamHandler.  Call before the first DasWasmRdr_feed(); a processor
+ * DasIOProc.  Call before the first DasWasmRdr_feed(); a processor
  * that misses the dataset headers can't make sense of the data.
  *
  * The reader keeps the pointer, so the handler must outlive the reader or
@@ -203,7 +214,7 @@ DAS_WASM_API void del_DasWasmRdr(DasWasmRdr* pThis);
  * @returns 0 (DAS_OKAY) or a positive error code
  * @memberof DasWasmRdr
  */
-int DasWasmRdr_addProcessor(DasWasmRdr* pThis, StreamHandler* pProc);
+int DasWasmRdr_addProcessor(DasWasmRdr* pThis, DasIOProc* pProc);
 
 /** Free a stream previously detached with DasWasmRdr_take() */
 DAS_WASM_API void daswasm_stream_free(DasStream* pSd);
@@ -277,7 +288,7 @@ DAS_WASM_API const char* daswasm_dim_roleAt(DasDim* pDim, int i);
 /** The units string for a variable, "" for dimensionless */
 DAS_WASM_API const char* daswasm_var_units(const DasVar* pVar);
 
-/** The storage element type name, exactly as das_vt_toStr() prints it:
+/** The storage element type name, exactly as dasvt_name() prints it:
  * "ubyte", "byte", "ushort", "short", "uint", "int", "ulong", "long",
  * "float", "double", "das_time", "char*" (text), or "ubyte*" (byte runs).
  * Composite variables (vectors, matrices, complex values) report the type
@@ -319,7 +330,7 @@ DAS_WASM_API DasAry* daswasm_var_ary(DasVar* pVar);
 /** Every value of a variable as a newly allocated rectangular array.
  *
  * The universal fallback: works for computed variables and squares off
- * ragged data with fill (see DasVar_materializeQube for the fine print,
+ * ragged data with fill (see new_DasAry_materializeQube for the fine print,
  * including why variable length blobs are refused).  One copy is made.
  * Free the result with daswasm_ary_free().
  *
@@ -376,7 +387,7 @@ DAS_WASM_API int daswasm_ary_size(const DasAry* pAry);
  *          an error: check daswasm_ary_size() first)
  * @memberof DasAry
  */
-DAS_WASM_API const ubyte* daswasm_ary_data(DasAry* pAry);
+DAS_WASM_API const uint8_t* daswasm_ary_data(DasAry* pAry);
 
 /** The i-th string of a "text" array (flat index), NULL if out of range */
 DAS_WASM_API const char* daswasm_ary_textAt(DasAry* pAry, int i);
@@ -404,7 +415,7 @@ DAS_WASM_API int daswasm_ary_sizeAt(DasAry* pAry, const int* pLoc, int nLoc);
  * location, NULL if empty or out of range.  Zero-copy like
  * daswasm_ary_data(), of which it is the generalization: nLoc = 0 gives the
  * same answer. */
-DAS_WASM_API const ubyte* daswasm_ary_dataAt(DasAry* pAry, const int* pLoc, int nLoc);
+DAS_WASM_API const uint8_t* daswasm_ary_dataAt(DasAry* pAry, const int* pLoc, int nLoc);
 
 /** Convert a "time" element array to doubles.
  *
@@ -413,7 +424,7 @@ DAS_WASM_API const ubyte* daswasm_ary_dataAt(DasAry* pAry, const int* pLoc, int 
  *
  * @returns a newly allocated array of daswasm_ary_size() doubles holding
  *          seconds since 1958-01-01 ignoring leap seconds (das2C internal
- *          time, see dt_ttime), or NULL if the array does not hold time
+ *          time, see DasTime_toSec1958), or NULL if the array does not hold time
  *          elements.  Free with daswasm_free().
  * @memberof DasAry
  */
@@ -453,7 +464,7 @@ DAS_WASM_API double* daswasm_ary_times(DasAry* pAry);
  *        on error (see daswasm_lastError).  Free with daswasm_free().
  * @memberof DasAry
  */
-DAS_WASM_API double* daswasm_ary_doubles(DasAry* pAry, const ubyte* pRef, double rScale);
+DAS_WASM_API double* daswasm_ary_doubles(DasAry* pAry, const uint8_t* pRef, double rScale);
 
 /** Release an array obtained from daswasm_var_qube() */
 DAS_WASM_API void daswasm_ary_free(DasAry* pAry);
@@ -513,7 +524,7 @@ DAS_WASM_API char* daswasm_desc_json(const DasDesc* pDesc);
  *            uri, url, separator, children, loadable
  *   child    name, kind, stub
  *
- *   kind       das_node_type_e without its prefix: "catalog", "collection",
+ *   kind       das_nodetype without its prefix: "catalog", "collection",
  *              "srcset", "stream_src", "file_agg", "spdf_cat", "spase_cat",
  *              or "inv" for a type this das2C does not know
  *   type       the document's own "type" string, unknown ones included
@@ -522,7 +533,7 @@ DAS_WASM_API char* daswasm_desc_json(const DasDesc* pDesc);
  *              document says null
  *   stub       the container's entry for the child, verbatim
  *   loadable   names of the children das2C can build a source from, see
- *              dassrc_loadable()
+ *              DasSrc_loadable()
  *
  * Absent string fields are null.
  *

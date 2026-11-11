@@ -1,6 +1,6 @@
 # Performance
 
-How fast das2js turns stream bytes into typed arrays, and what it costs to
+How fast das3js turns stream bytes into typed arrays, and what it costs to
 load.  Short version: binary das streams parse far faster than any network
 delivers them; text streams full of numbers are much slower, so ask servers
 for binary.
@@ -97,10 +97,10 @@ about 1 ms because the views are not copies.
 
 ### Painting while it downloads
 
-Since 2026-10-29 the page also paints each packet into a raster as it is
+The page also paints each packet into a raster as it is
 parsed (src/render.c), and each re-parse is followed by a parse+paint pass
 from memory.  [hammer_perf.png](hammer_perf.png) is the burst run in a
-Firefox window that day:
+Firefox window on 2026-10-29:
 
 * The first pixel showed at 740 ms, 67 ms after the first record.
 * Painting took 4.6 s of the 38.4 s download, so it still hides inside the
@@ -124,7 +124,7 @@ The three files from `make module`:
 |--------------|--------:|--------:|
 | `das2c.wasm` |  495 KB |  202 KB |
 | `das2c.mjs`  |   19 KB |    6 KB |
-| `das2js.mjs` |   47 KB |   16 KB |
+| `das3js.mjs` |   47 KB |   16 KB |
 
 The `.wasm` holds das2C, the expat XML parser, zlib, the C library and the
 raster painter.  Sizes as of 2026-10-29.

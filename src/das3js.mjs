@@ -1,10 +1,10 @@
 /* Copyright (C) 2026 Chris Piker
  *
- * This file is part of das2js, das stream utilities for browsers.
+ * This file is part of das3js, das stream utilities for browsers.
  * See the LICENSE file in the repository root for terms.
  */
 
-/* das2js: read das streams in the browser.
+/* das3js: read das streams in the browser.
  *
  * This module is the idiomatic JavaScript face of das2C compiled to
  * WebAssembly.  The layering, bottom to top:
@@ -15,7 +15,7 @@
  *                 resolves to the "Module" object: the heap views, the
  *                 cwrap() marshaller, and every exported C function with a
  *                 leading underscore (_daswasm_init, ...).
- *   das2js.mjs    this file.  Wraps those C functions in classes that hold
+ *   das3js.mjs    this file.  Wraps those C functions in classes that hold
  *                 the C pointers for you and hand back TypedArrays.
  *
  * Why so much C and so little JS?  Stream parsing and value decoding stay in
@@ -43,7 +43,7 @@ import createDas3Module from './das2c.mjs';
 /* Value type mapping
  *
  * The C side names element types with das2C's own vocabulary; see
- * DasVar.storage (das_vt_toStr names in glue/wasm.h).  Each numeric one has exactly one
+ * DasVar.storage (dasvt_name names in glue/wasm.h).  Each numeric one has exactly one
  * TypedArray flavor.  "das_time" is a broken-down calendar struct, "char*"
  * and "ubyte*" are internal pointers to variable length items; none of those
  * three can be viewed directly and DasVar.values() handles them separately. */
@@ -71,7 +71,7 @@ const UTF8E = new TextEncoder();   /* always UTF-8, it takes no argument */
  * this module is created through it.
  *
  * @param {object} [opts]
- * @param {string} [opts.progName='das2js'] Name das2C uses in log and error
+ * @param {string} [opts.progName='das3js'] Name das2C uses in log and error
  *        messages
  * @param {function} [opts.locateFile] Passed through to emscripten.  By
  *        default the .wasm is fetched from beside das2c.mjs; give a
@@ -84,7 +84,7 @@ export async function load(opts = {})
 	if(opts.locateFile) emOpts.locateFile = opts.locateFile;
 
 	const m = await createDas3Module(emOpts);
-	return new DasRuntime(m, opts.progName || 'das2js');
+	return new DasRuntime(m, opts.progName || 'das3js');
 }
 
 /** The library handle: owns the wasm instance and creates readers.
@@ -111,6 +111,25 @@ export class DasRuntime {
 		this.#m = m;
 
 		const w = (name, ret, args) => m.cwrap(name, ret, args);
+
+		/* f() is w() for calls whose failure this module reports with
+		 * lastError().  das2C's error text lingers until the next error, and
+		 * not every failure produces one (some only log, some just return
+		 * NULL), so reading it after a failed call could describe some older
+		 * call instead.  Clearing first means the text read afterwards
+		 * belongs to this call, or is empty.  The clear is a second trip
+		 * into wasm, so only calls that need it pay for it; the per-tick
+		 * polling calls stay on plain w().
+		 *
+		 * (...args) gathers however many arguments the caller passed into
+		 * an array, and fn(...args) spreads them back out, so one wrapper
+		 * fits every signature. */
+		const clear = w('daswasm_clearError', null, []);
+		const f = (name, ret, args) => {
+			const fn = w(name, ret, args);
+			return (...args) => { clear(); return fn(...args); };
+		};
+
 		const N = 'number', S = 'string';
 		this.#c = {
 			init:          w('daswasm_init', null, [S]),
@@ -119,11 +138,11 @@ export class DasRuntime {
 			idxUnused:     w('daswasm_idxUnused', N, []),
 			idxBorrow:     w('daswasm_idxBorrow', N, []),
 
-			newRdr:        w('new_DasWasmRdr', N, []),
-			feed:          w('DasWasmRdr_feed', N, [N, N, N]),
-			end:           w('DasWasmRdr_end', N, [N]),
+			newRdr:        f('new_DasWasmRdr', N, []),
+			feed:          f('DasWasmRdr_feed', N, [N, N, N]),
+			end:           f('DasWasmRdr_end', N, [N]),
 			rdrStream:     w('DasWasmRdr_stream', N, [N]),
-			rdrTake:       w('DasWasmRdr_take', N, [N]),
+			rdrTake:       f('DasWasmRdr_take', N, [N]),
 			rdrProgress:   w('DasWasmRdr_progress', N, [N]),
 			rdrTaskSize:   w('DasWasmRdr_taskSize', N, [N]),
 			rdrException:  w('DasWasmRdr_exception', S, [N]),
@@ -132,15 +151,15 @@ export class DasRuntime {
 
 			strmDsCount:   w('daswasm_strm_dsCount', N, [N]),
 			strmDsAt:      w('daswasm_strm_dsAt', N, [N, N]),
-			descJson:      w('daswasm_desc_json', N, [N]),
-			dsJson:        w('daswasm_ds_json', N, [N]),
+			descJson:      f('daswasm_desc_json', N, [N]),
+			dsJson:        f('daswasm_ds_json', N, [N]),
 
 			/* the live quantities: everything else about a dataset's structure
 			 * is fixed at header time and comes from the JSON snapshot */
 			dsShapeAt:     w('daswasm_ds_shapeAt', N, [N, N]),
 			varShapeAt:    w('daswasm_var_shapeAt', N, [N, N]),
 			varAry:        w('daswasm_var_ary', N, [N]),
-			varQube:       w('daswasm_var_qubeLike', N, [N, N]),
+			varQube:       f('daswasm_var_qubeLike', N, [N, N]),
 
 			aryValType:    w('daswasm_ary_valType', S, [N]),
 			aryValSize:    w('daswasm_ary_valSize', N, [N]),
@@ -149,18 +168,18 @@ export class DasRuntime {
 			arySize:       w('daswasm_ary_size', N, [N]),
 			aryData:       w('daswasm_ary_data', N, [N]),
 			aryTextAt:     w('daswasm_ary_textAt', S, [N, N]),
-			aryLengthAt:   w('daswasm_ary_lengthAt', N, [N, N, N]),
-			arySizeAt:     w('daswasm_ary_sizeAt', N, [N, N, N]),
+			aryLengthAt:   f('daswasm_ary_lengthAt', N, [N, N, N]),
+			arySizeAt:     f('daswasm_ary_sizeAt', N, [N, N, N]),
 			aryDataAt:     w('daswasm_ary_dataAt', N, [N, N, N]),
-			aryTimes:      w('daswasm_ary_times', N, [N]),
-			aryDoubles:    w('daswasm_ary_doubles', N, [N, N, N]),
+			aryTimes:      f('daswasm_ary_times', N, [N]),
+			aryDoubles:    f('daswasm_ary_doubles', N, [N, N, N]),
 			aryFree:       w('daswasm_ary_free', null, [N]),
 			free:          w('daswasm_free', null, [N]),
 
 			/* the raster painter, src/render.h */
-			newRen:        w('new_DasRender', N, [N, N]),
-			renSetX:       w('DasRender_setX', N, [N, S, S]),
-			renAttach:     w('DasRender_attach', N, [N, N]),
+			newRen:        f('new_DasRender', N, [N, N]),
+			renSetX:       f('DasRender_setX', N, [N, S, S]),
+			renAttach:     f('DasRender_attach', N, [N, N]),
 			renKind:       w('DasRender_kind', N, [N]),
 			renColorize:   w('DasRender_colorize', N, [N]),
 			renDirty:      w('DasRender_dirty', N, [N]),
@@ -178,31 +197,31 @@ export class DasRuntime {
 			 * exported straight from libdas3.a (see DAS2C_EXPORTS in the
 			 * Makefile).  Pointers that may be NULL come back as 'number' and
 			 * are decoded by cString(), since 'string' turns NULL into ''. */
-			nodeJson:      w('daswasm_node_json', N, [N]),
-			nodeNew:       w('new_DasNode_json', N, [N, N, S, S]),
+			nodeJson:      f('daswasm_node_json', N, [N]),
+			nodeNew:       f('new_DasNode_json', N, [N, N, S, S]),
 			nodeDel:       w('del_DasNode', null, [N]),
 			walkNew:       w('new_DasNodeWalk', N, [N, S]),
 			walkSeed:      w('new_DasNodeWalk_seed', N, []),
 			walkDel:       w('del_DasNodeWalk', null, [N]),
 			walkState:     w('DasNodeWalk_state', N, [N]),
-			walkUrl:       w('DasNodeWalk_url', S, [N, N]),
+			walkUrl:       w('DasNodeWalk_urlAt', S, [N, N]),
 			walkUri:       w('DasNodeWalk_uri', S, [N]),
 			walkFeed:      w('DasNodeWalk_feed', N, [N, N, N, N, S]),
 			walkFail:      w('DasNodeWalk_fail', null, [N, N, S]),
 			walkResult:    w('DasNodeWalk_result', N, [N]),
 			walkNearest:   w('DasNodeWalk_nearest', N, [N, N]),
-			srcNew:        w('new_DasSrc_node', N, [N]),
+			srcNew:        f('new_DasSrc_node', N, [N]),
 			srcDel:        w('del_DasSrc', null, [N]),
 			srcTitle:      w('DasSrc_title', N, [N]),
 			srcNeedsAuth:  w('DasSrc_needsAuth', 'boolean', [N]),
 			srcAuthRealm:  w('DasSrc_authRealm', N, [N]),
-			srcExCount:    w('DasSrc_exampleCount', N, [N]),
-			srcExLabel:    w('DasSrc_exampleLabel', S, [N, N]),
-			srcNewReq:     w('DasSrc_newReq', N, [N, N]),
+			srcExCount:    w('DasSrc_numExamples', N, [N]),
+			srcExLabel:    w('DasSrc_exampleLblAt', S, [N, N]),
+			srcNewReq:     f('new_DasReq_src', N, [N, N]),
 			srcMime:       w('DasSrc_mime', S, [N, N]),
-			srcUrl:        w('DasStreamSrc_url', N, [N, N, N, N, N]),
+			srcUrl:        w('DasSrc_reqUrl', N, [N, N, N, N, N]),
 			reqDel:        w('del_DasReq', null, [N]),
-			reqSet:        w('DasReq_set', N, [N, S, S]),
+			reqSet:        f('DasReq_set', N, [N, S, S]),
 		};
 
 		this.#c.init(progName);

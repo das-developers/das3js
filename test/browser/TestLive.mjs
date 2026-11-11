@@ -9,7 +9,7 @@
  * live_test` for the public one over the network, `make local_test` for the
  * dasFlex checkout next door through the CGI shim. */
 
-import {load, DasError} from '../build/das2js.mjs';
+import {load, DasError} from '../build/das3js.mjs';
 
 const out = document.getElementById('out');
 let failed = false;
@@ -132,9 +132,9 @@ async function main()
 	/* Server-side rejection must surface as a DasError carrying the
 	 * server's own exception text, which is what a UI shows the user.  The
 	 * text only reaches a cross-origin page if the server puts CORS headers
-	 * on its error replies too; dasFlex does since 2026-10-20 (Iowa deployed
-	 * the same day).  Older servers without them make the browser hide the
-	 * body, so the missing text is reported as a WARNING, not failed on. */
+	 * on its error replies too; dasFlex does.  A server without them makes
+	 * the browser hide the body, so the missing text is reported as a
+	 * WARNING, not failed on. */
 	log('INFO: now a deliberately bad request (format.version=3 on a das2-only source)');
 	let threw = false;
 	try{ await d.fetchStream(BAD); }

@@ -4,6 +4,6 @@
 # AuthConfig" as well.  Same-origin fetches and module imports resend the
 # credentials on their own, so the pages need no changes for it.
 AuthType Basic
-AuthName "das2js test pages"
+AuthName "das3js test pages"
 AuthUserFile @HTPASSWD@
 Require valid-user

@@ -3,3 +3,4 @@ node_modules/
 *.wasm
 co_notes
 tmp/
+CLAUDE.md

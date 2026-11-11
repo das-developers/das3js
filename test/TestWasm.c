@@ -40,7 +40,7 @@ static DasWasmRdr* readFile(const char* sPath, size_t uChunk)
 	}
 
 	DasWasmRdr* pRdr = new_DasWasmRdr();
-	ubyte aBuf[997];  /* odd size on purpose, stresses packet splits */
+	uint8_t aBuf[997];  /* odd size on purpose, stresses packet splits */
 	if(uChunk > sizeof(aBuf)) uChunk = sizeof(aBuf);
 
 	size_t uRead = 0;
@@ -150,12 +150,12 @@ static int walkStream(DasStream* pSd, const char* sPath)
 					   (daswasm_var_shapeAt(pVar, 0) != daswasm_idxUnused())){
 						CHECK(daswasm_ary_size(pAry) == 0, "empty dataset with a non-empty record array");
 						CHECK(daswasm_ary_data(pAry) == NULL, "empty array with a data pointer");
-						if(DasAry_valType(pAry) == vtTime){
+						if(DasAry_vt(pAry) == DASVT_TIME){
 							double* pSec = daswasm_ary_times(pAry);
 							CHECK(pSec != NULL, "time conversion of an empty array failed");
 							daswasm_free(pSec);
 						}
-						else if(DasAry_valType(pAry) <= vtDouble){
+						else if(DasAry_vt(pAry) <= DASVT_DOUBLE){
 							double* pDbl = daswasm_ary_doubles(pAry, NULL, 1.0);
 							CHECK(pDbl != NULL, "double conversion of an empty array failed");
 							daswasm_free(pDbl);
@@ -170,13 +170,13 @@ static int walkStream(DasStream* pSd, const char* sPath)
 						/* the pointer must be the decoder's own buffer: compare
 						   against a direct library call, no copies anywhere */
 						size_t uDirect = 0;
-						const ubyte* pDirect = DasAry_getIn(
-							pAry, DasAry_valType(pAry), DIM0, &uDirect
+						const uint8_t* pDirect = DasAry_valsIn(
+							pAry, DasAry_vt(pAry), DAS_ADDR0, &uDirect
 						);
 						CHECK(daswasm_ary_data(pAry) == pDirect, "data pointer is not zero-copy");
 						CHECK((size_t)daswasm_ary_size(pAry) == uDirect, "element count mismatch");
 
-						if(DasAry_valType(pAry) == vtText)
+						if(DasAry_vt(pAry) == DASVT_TEXT)
 							CHECK(daswasm_ary_textAt(pAry, 0) != NULL, "no first string");
 
 						/* Partial-index access must agree with the flat view at
@@ -187,7 +187,7 @@ static int walkStream(DasStream* pSd, const char* sPath)
 						CHECK(daswasm_ary_sizeAt(pAry, NULL, 0) == daswasm_ary_size(pAry), "sizeAt(0) is not the size");
 						CHECK(daswasm_ary_dataAt(pAry, NULL, 0) == daswasm_ary_data(pAry), "dataAt(0) is not data");
 						int nTiled = 0;
-						const ubyte* pExpect = daswasm_ary_data(pAry);
+						const uint8_t* pExpect = daswasm_ary_data(pAry);
 						for(int iRec = 0; iRec < nRecs; ++iRec){
 							int nSub = daswasm_ary_sizeAt(pAry, &iRec, 1);
 							CHECK(nSub >= 0, "sizeAt(record) failed");
@@ -198,7 +198,7 @@ static int walkStream(DasStream* pSd, const char* sPath)
 						}
 						CHECK(nTiled == daswasm_ary_size(pAry), "record sub-arrays do not tile the array");
 
-						if(DasAry_valType(pAry) == vtTime){
+						if(DasAry_vt(pAry) == DASVT_TIME){
 							double* pSec = daswasm_ary_times(pAry);
 							CHECK(pSec != NULL, "time conversion failed");
 							/* seconds since 1958: 0 (1958) to ~4.5e9 (2100) */
@@ -212,15 +212,15 @@ static int walkStream(DasStream* pSd, const char* sPath)
 						   element's type.  For int64 that is the whole point:
 						   compare against integer arithmetic, not against a
 						   double that may already have rounded. */
-						das_val_type vt = DasAry_valType(pAry);
-						if((vt >= vtUByte)&&(vt <= vtDouble)){
+						das_vt vt = DasAry_vt(pAry);
+						if((vt >= DASVT_UBYTE)&&(vt <= DASVT_DOUBLE)){
 							int nVals = daswasm_ary_size(pAry);
 							double* pDbl = daswasm_ary_doubles(pAry, NULL, 1.0);
 							CHECK(pDbl != NULL, "double conversion failed");
 							double* pRel = daswasm_ary_doubles(pAry, daswasm_ary_data(pAry), 1.0);
 							CHECK(pRel != NULL, "re-based double conversion failed");
 							CHECK(isnan(pRel[0]) || (pRel[0] == 0.0), "re-based first element is not zero");
-							if(vt == vtLong){
+							if(vt == DASVT_LONG){
 								const int64_t* pL = (const int64_t*)daswasm_ary_data(pAry);
 								for(int i = 0; i < nVals; ++i){
 									if(isnan(pRel[i])) continue;
@@ -244,7 +244,7 @@ static int walkStream(DasStream* pSd, const char* sPath)
 						/* a non-broadcast, array-backed, non-ragged variable's qube
 						   must hold exactly the zero-copy bytes */
 						bool bStraight = (pAry != NULL)&&
-							(DasAry_valType(pQube) == DasAry_valType(pAry));
+							(DasAry_vt(pQube) == DasAry_vt(pAry));
 						for(int i = 0; bStraight && (i < nRank); ++i)
 							if(daswasm_var_shapeAt(pVar, i) <= 0)
 								bStraight = false;
@@ -277,17 +277,17 @@ static int walkStream(DasStream* pSd, const char* sPath)
    properties of every descriptor.  Parsed with das2C's own JSON reader. */
 static const char* jstr(const DasJdo* pJdo, const char* sPath)
 {
-	const DasJdo* p = DasJdo_get(pJdo, sPath);
-	return (p != NULL) ? DasJdo_string(p) : NULL;
+	const DasJdo* p = DasJdo_subtree(pJdo, sPath);
+	return (p != NULL) ? DasJdo_str(p) : NULL;
 }
 
 static int checkSnapshot(DasStream* pSd, const char* sPath)
 {
 	char* sJson = daswasm_desc_json((DasDesc*)pSd);
 	CHECK(sJson != NULL, "stream props snapshot failed");
-	DasJdo* pProps = das_json_parse(sJson, strlen(sJson));
+	DasJdo* pProps = new_DasJdo_parse(sJson, strlen(sJson));
 	CHECK(pProps != NULL, "stream props snapshot is not valid JSON");
-	const das_json_dict* pDict = DasJdo_dict(pProps);
+	const DasJsonDict* pDict = DasJdo_dict(pProps);
 	CHECK(pDict != NULL, "stream props snapshot is not an object");
 	CHECK((int)pDict->length == daswasm_desc_propCount((DasDesc*)pSd), "stream property count differs from accessor");
 	free(pProps);
@@ -298,35 +298,35 @@ static int checkSnapshot(DasStream* pSd, const char* sPath)
 		DasDs* pDs = daswasm_strm_dsAt(pSd, iDs);
 		sJson = daswasm_ds_json(pDs);
 		CHECK(sJson != NULL, "dataset snapshot failed");
-		DasJdo* pJdo = das_json_parse(sJson, strlen(sJson));
+		DasJdo* pJdo = new_DasJdo_parse(sJson, strlen(sJson));
 		if(pJdo == NULL) printf("ERROR: %s\n", sJson);
 		CHECK(pJdo != NULL, "dataset snapshot is not valid JSON");
 
 		const char* sName = jstr(pJdo, "name");
 		CHECK((sName != NULL)&&(strcmp(sName, daswasm_ds_id(pDs)) == 0), "snapshot name differs from accessor");
-		const DasJdo* pRank = DasJdo_get(pJdo, "rank");
-		CHECK((pRank != NULL)&&(atoi(((das_json_num*)pRank->value)->number) == daswasm_ds_rank(pDs)), "snapshot rank differs");
-		const DasJdo* pShape = DasJdo_get(pJdo, "shape");
-		CHECK((pShape != NULL)&&(pShape->type == das_json_type_ary), "snapshot shape missing");
-		CHECK((int)((das_json_ary*)pShape->value)->length == daswasm_ds_rank(pDs), "snapshot shape length is not the rank");
+		const DasJdo* pRank = DasJdo_subtree(pJdo, "rank");
+		CHECK((pRank != NULL)&&(atoi(((DasJsonNum*)pRank->value)->number) == daswasm_ds_rank(pDs)), "snapshot rank differs");
+		const DasJdo* pShape = DasJdo_subtree(pJdo, "shape");
+		CHECK((pShape != NULL)&&(pShape->type == DASJSONTYPE_ARY), "snapshot shape missing");
+		CHECK((int)((DasJsonAry*)pShape->value)->length == daswasm_ds_rank(pDs), "snapshot shape length is not the rank");
 
 		const char* asKinds[] = {"data", "coords"};
 		for(int iKind = 0; iKind < 2; ++iKind){
-			const DasJdo* pDims = DasJdo_get(pJdo, asKinds[iKind]);
-			CHECK((pDims != NULL)&&(pDims->type == das_json_type_ary), "snapshot dims missing");
-			CHECK((int)((das_json_ary*)pDims->value)->length == daswasm_ds_dimCount(pDs, iKind), "snapshot dim count differs");
+			const DasJdo* pDims = DasJdo_subtree(pJdo, asKinds[iKind]);
+			CHECK((pDims != NULL)&&(pDims->type == DASJSONTYPE_ARY), "snapshot dims missing");
+			CHECK((int)((DasJsonAry*)pDims->value)->length == daswasm_ds_dimCount(pDs, iKind), "snapshot dim count differs");
 			int iDim = 0;
-			for(const das_json_ary_el* pEl = DasJdo_aryFirst(pDims); pEl != NULL; pEl = pEl->next, ++iDim){
+			for(const DasJsonAryEl* pEl = DasJdo_aryFirst(pDims); pEl != NULL; pEl = pEl->next, ++iDim){
 				DasDim* pDim = daswasm_ds_dimAt(pDs, iDim, iKind);
 				const char* sDim = jstr(pEl->value, "name");
 				CHECK((sDim != NULL)&&(strcmp(sDim, daswasm_dim_id(pDim)) == 0), "snapshot dim name differs");
 				const char* sKind = jstr(pEl->value, "kind");
 				CHECK((sKind != NULL)&&(strcmp(sKind, iKind ? "coord" : "data") == 0), "snapshot dim kind differs");
-				const DasJdo* pVars = DasJdo_get(pEl->value, "vars");
-				CHECK((pVars != NULL)&&(pVars->type == das_json_type_dict), "snapshot vars missing");
-				CHECK((int)((das_json_dict*)pVars->value)->length == daswasm_dim_varCount(pDim), "snapshot var count differs");
+				const DasJdo* pVars = DasJdo_subtree(pEl->value, "vars");
+				CHECK((pVars != NULL)&&(pVars->type == DASJSONTYPE_DICT), "snapshot vars missing");
+				CHECK((int)((DasJsonDict*)pVars->value)->length == daswasm_dim_varCount(pDim), "snapshot var count differs");
 				int iVar = 0;
-				for(const das_json_dict_el* pV = DasJdo_dictFirst(pVars); pV != NULL; pV = pV->next, ++iVar){
+				for(const DasJsonDictEl* pV = DasJdo_dictFirst(pVars); pV != NULL; pV = pV->next, ++iVar){
 					DasVar* pVar = daswasm_dim_varAt(pDim, iVar);
 					CHECK(strcmp(pV->name->string, daswasm_dim_roleAt(pDim, iVar)) == 0, "snapshot role differs from accessor");
 					const char* sRole = jstr(pV->value, "role");
@@ -334,22 +334,22 @@ static int checkSnapshot(DasStream* pSd, const char* sPath)
 					const char* sSem = jstr(pV->value, "semantic");
 					const char* sStore = jstr(pV->value, "storage");
 					CHECK((sSem != NULL)&&(sStore != NULL)&&(sSem[0] != '\0')&&(sStore[0] != '\0'), "snapshot var without semantic/storage");
-					/* byte runs report ubyte elements, everything else das_vt_toStr's name */
+					/* byte runs report uint8_t elements, everything else dasvt_name's name */
 					const char* sVt = daswasm_var_valType(pVar);
 					bool bBytes = (strcmp(sVt, "char*") == 0)||(strcmp(sVt, "ubyte*") == 0);
 					CHECK(strcmp(sStore, bBytes ? "ubyte" : sVt) == 0, "snapshot storage differs from accessor");
 					CHECK(bBytes == ((strcmp(sSem, "string") == 0)||(strcmp(sSem, "blob") == 0)), "snapshot semantic disagrees with byte run class");
-					CHECK(bBytes == (DasJdo_get(pV->value, "ops") == NULL), "ops presence disagrees with byte run class");
+					CHECK(bBytes == (DasJdo_subtree(pV->value, "ops") == NULL), "ops presence disagrees with byte run class");
 					const char* sGen = jstr(pV->value, "source/kind");
 					CHECK(sGen != NULL, "snapshot var without source kind");
 					CHECK((strcmp(sGen, "array") == 0) == (daswasm_var_ary(pVar) != NULL), "source kind disagrees with backing array");
-					const DasJdo* pSyms = DasJdo_get(pV->value, "symbols");
-					CHECK((pSyms != NULL)&&(pSyms->type == das_json_type_ary), "snapshot var without symbols");
+					const DasJdo* pSyms = DasJdo_subtree(pV->value, "symbols");
+					CHECK((pSyms != NULL)&&(pSyms->type == DASJSONTYPE_ARY), "snapshot var without symbols");
 					if(!bBytes && (daswasm_var_intrRank(pVar) == 1) && (daswasm_var_compSym(pVar, 0) != NULL))
-						CHECK((int)((das_json_ary*)pSyms->value)->length == daswasm_var_intrShapeAt(pVar, 0), "symbol count differs from inner extent");
-					const DasJdo* pP = DasJdo_get(pV->value, "props");
-					CHECK((pP != NULL)&&(pP->type == das_json_type_dict), "snapshot var without props");
-					CHECK((int)((das_json_dict*)pP->value)->length == daswasm_desc_propCount((DasDesc*)pVar), "var property count differs");
+						CHECK((int)((DasJsonAry*)pSyms->value)->length == daswasm_var_intrShapeAt(pVar, 0), "symbol count differs from inner extent");
+					const DasJdo* pP = DasJdo_subtree(pV->value, "props");
+					CHECK((pP != NULL)&&(pP->type == DASJSONTYPE_DICT), "snapshot var without props");
+					CHECK((int)((DasJsonDict*)pP->value)->length == daswasm_desc_propCount((DasDesc*)pVar), "var property count differs");
 				}
 			}
 		}
@@ -365,7 +365,7 @@ int main(int argc, char** argv)
 	daswasm_init(argv[0]);
 
 	/* A vector das3 binary, a rank 2 string das3 stream, a das2 text
-	   stream that exercises the up-convert path and vtTime arrays, and a
+	   stream that exercises the up-convert path and DASVT_TIME arrays, and a
 	   ragged waveform stream for the partial-index access */
 	const char* aFiles[] = {
 		"examples/ex17_vector_noframe.d3b",
@@ -408,12 +408,12 @@ int main(int argc, char** argv)
 	{
 		int64_t nFill = INT64_MIN;
 		size_t uShape = 0;
-		DasAry* pAry = new_DasAry("t", vtLong, 0, (const ubyte*)&nFill, 1, &uShape, UNIT_TT2000);
+		DasAry* pAry = new_DasAry("t", DASVT_LONG, 0, (const uint8_t*)&nFill, 1, &uShape, DASUNITS_TT2000);
 		if(pAry == NULL){ printf("ERROR: couldn't build a test array\n"); return 64; }
 		int64_t aVals[4] = {9007199254740992LL, 9007199254740993LL, INT64_MIN, 9007199254740994LL};
-		DasAry_append(pAry, (const ubyte*)aVals, 4);
+		DasAry_append(pAry, (const uint8_t*)aVals, 4);
 
-		double* pOut = daswasm_ary_doubles(pAry, (const ubyte*)aVals, 1e-9);
+		double* pOut = daswasm_ary_doubles(pAry, (const uint8_t*)aVals, 1e-9);
 		if(pOut == NULL){ printf("ERROR: %s\n", daswasm_lastError()); return 64; }
 		if((pOut[0] != 0.0)||(pOut[1] != 1e-9)||(!isnan(pOut[2]))||(pOut[3] != 2e-9)){
 			printf("ERROR: re-based TT2000 doubles wrong: %.17g %.17g %.17g %.17g\n",
@@ -444,12 +444,19 @@ int main(int argc, char** argv)
 	/* Error path: garbage must fail loud and leave a message */
 	printf("INFO: ERROR log lines below are intentional, provoked by negative checks\n");
 	pRdr = new_DasWasmRdr();
-	if(DasWasmRdr_feed(pRdr, (const ubyte*)"not a das stream", 16) == 0){
+	if(DasWasmRdr_feed(pRdr, (const uint8_t*)"not a das stream", 16) == 0){
 		printf("ERROR: garbage input accepted\n");
 		return 64;
 	}
 	if(daswasm_lastError()[0] == '\0'){
 		printf("ERROR: parse failure left no error message\n");
+		return 64;
+	}
+	/* The text outlives the failure until cleared; clearing is what keeps
+	   the next failure from reporting this one */
+	daswasm_clearError();
+	if(daswasm_lastError()[0] != '\0'){
+		printf("ERROR: daswasm_clearError left '%s'\n", daswasm_lastError());
 		return 64;
 	}
 	(void)DasWasmRdr_end(pRdr);

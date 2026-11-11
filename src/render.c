@@ -1,16 +1,16 @@
 /* Copyright (C) 2026 Chris Piker
  *
- * This file is part of das2js, das stream utilities for browsers.
+ * This file is part of das3js, das stream utilities for browsers.
  * See the LICENSE file in the repository root for terms.
  *
- * das2js statically links das2C, which is LGPL 2.1; distributions of the
+ * das3js statically links das2C, which is LGPL 2.1; distributions of the
  * compiled WebAssembly module carry das2C's terms as well as these.
  */
 
 /* Raster painter, see render.h for the contract.
  *
  * Data access:
- *   - Values come from DasVar_subset() one record at a time.  For array
+ *   - Values come from new_DasAry_subset() one record at a time.  For array
  *     backed variables that's a view, no copy.  One record per call also
  *     covers ragged waveforms without a separate path.
  *   - Waveform times are REF + OFFSET.  The upconverter also gives such a
@@ -66,7 +66,7 @@
  * spectrogram plot (Juno Waves survey), low to high,
  * linearly resampled from 232 rows to 256 entries. */
 
-static const ubyte g_aDefMap[256*4] = {
+static const uint8_t g_aDefMap[256*4] = {
 	  0,  0,124,255,   0,  2,129,255,   0,  4,136,255,   0,  5,141,255,
 	  0,  7,147,255,   0,  9,152,255,   0, 11,158,255,   0, 12,164,255,
 	  0, 13,169,255,   0, 15,175,255,   0, 17,181,255,   0, 19,187,255,
@@ -165,7 +165,7 @@ typedef struct dr_ds {
 } dr_ds;
 
 struct das_render {
-	StreamHandler hndlr;
+	DasIOProc hndlr;
 	int nW;
 	int nH;
 	int nKind;
@@ -175,11 +175,11 @@ struct das_render {
 	double rT1;
 	double rPxPerUs;
 
-	ubyte  aMap[256*4];
+	uint8_t  aMap[256*4];
 	float*    pVal;        /* spectrogram grid */
 	uint32_t* pCount;      /* density grid */
 	uint32_t  uMaxCount;
-	ubyte*    pRgba;
+	uint8_t*    pRgba;
 	bool      bDirty;
 
 	double rPaintMs;
@@ -188,7 +188,7 @@ struct das_render {
 	int    nSkipped;
 	char   sNote[DR_NOTE_SZ];
 
-	/* Signature of the first dataset, by DasDim_dim names */
+	/* Signature of the first dataset, by DasDim_physDim names */
 	char sTimeDim[DR_DIM_SZ];
 	char sYDim[DR_DIM_SZ];
 	char sDataDim[DR_DIM_SZ];
@@ -198,14 +198,14 @@ struct das_render {
 	bool   bYSet;
 	double rYMin;
 	double rYMax;
-	das_units yUnits;
+	DasUnits yUnits;
 
 	/* Color axis, spectrograms only */
 	bool   bZLog;
 	bool   bZSet;
 	double rZMin;
 	double rZMax;
-	das_units zUnits;
+	DasUnits zUnits;
 
 	/* Density outlier tracking since the last refit */
 	uint64_t nPts;
@@ -245,33 +245,33 @@ static void _note(DasRender* pThis, const char* sFmt, ...)
 }
 
 /* Inline the two types that matter; anything else goes through das2C */
-static inline bool _val(const ubyte* p, das_val_type vt, double* pOut)
+static inline bool _val(const uint8_t* p, das_vt vt, double* pOut)
 {
 	switch(vt){
-	case vtFloat:  *pOut = *((const float*)p);  return true;
-	case vtDouble: *pOut = *((const double*)p); return true;
-	default: return das_elem_asDouble((das_elem_type)vt, p, pOut);
+	case DASVT_FLOAT:  *pOut = *((const float*)p);  return true;
+	case DASVT_DOUBLE: *pOut = *((const double*)p); return true;
+	default: return daset_toDouble((das_et)vt, p, pOut);
 	}
 }
 
-static bool _toUs2000(const ubyte* p, das_val_type vt, das_units units, double* pOut)
+static bool _toUs2000(const uint8_t* p, das_vt vt, DasUnits units, double* pOut)
 {
-	if(vt == vtTime){
-		*pOut = Units_convertFromDt(UNIT_US2000, (const das_time*)p);
+	if(vt == DASVT_TIME){
+		*pOut = DasTime_toPoint((const DasTime*)p, DASUNITS_US2000);
 		return true;
 	}
 	double r;
 	if(!_val(p, vt, &r)) return false;
-	*pOut = Units_convertTo(UNIT_US2000, r, units);
+	*pOut = DasUnits_convert(r, units, DASUNITS_US2000);
 	return true;
 }
 
 /* Lend the elements of a subset; NULL with *pN = 0 if empty */
-static const ubyte* _elems(const DasAry* pAry, size_t* pN)
+static const uint8_t* _elems(const DasAry* pAry, size_t* pN)
 {
 	*pN = 0;
 	if(pAry == NULL) return NULL;
-	return DasAry_getIn(pAry, DasAry_valType(pAry), DIM0, pN);
+	return DasAry_valsIn(pAry, DasAry_vt(pAry), DAS_ADDR0, pN);
 }
 
 /* One record of a variable, all items.  nItems ignored for rank 1. */
@@ -279,35 +279,35 @@ static DasAry* _record(const DasVar* pVar, int nRank, ptrdiff_t iRec, ptrdiff_t 
 {
 	ptrdiff_t aMin[2] = {iRec, 0};
 	ptrdiff_t aMax[2] = {iRec + 1, nItems};
-	return DasVar_subset(pVar, nRank, aMin, aMax, NULL);
+	return new_DasAry_subset(pVar, nRank, aMin, aMax, NULL);
 }
 
 /* One value at a record, for things degenerate in index 1.  A subset
- * can't do this: das2C refuses to output a rank 0 array.  One DasVar_get
+ * can't do this: das2C refuses to output a rank 0 array.  One DasVar_datumAt
  * per record is cheap; it's per sample that would hurt. */
 static bool _timeAt(const DasVar* pVar, ptrdiff_t iRec, double* pUs)
 {
-	ptrdiff_t aLoc[VARIDX_MAX] = {0};
+	ptrdiff_t aLoc[DASIDX_MAX] = {0};
 	aLoc[0] = iRec;
-	das_byte_seq work = {NULL, 0};
-	das_datum dm;
-	if(DasVar_get(pVar, aLoc, work, &dm) != 0) return false;
-	return das_datum_toEpoch(&dm, UNIT_US2000, pUs);
+	DasByteSeq work = {NULL, 0};
+	DasDatum dm;
+	if(DasVar_datumAt(pVar, aLoc, work, &dm) != 0) return false;
+	return DasDatum_toPoint(&dm, DASUNITS_US2000, pUs);
 }
 
 static bool _valAt(const DasVar* pVar, ptrdiff_t iRec, double* pOut)
 {
-	ptrdiff_t aLoc[VARIDX_MAX] = {0};
+	ptrdiff_t aLoc[DASIDX_MAX] = {0};
 	aLoc[0] = iRec;
-	das_byte_seq work = {NULL, 0};
-	das_datum dm;
-	if(DasVar_get(pVar, aLoc, work, &dm) != 0) return false;
-	return das_datum_toDbl(&dm, pOut);
+	DasByteSeq work = {NULL, 0};
+	DasDatum dm;
+	if(DasVar_datumAt(pVar, aLoc, work, &dm) != 0) return false;
+	return DasDatum_toDouble(&dm, pOut);
 }
 
 static ptrdiff_t _nRecs(const DasDs* pDs)
 {
-	ptrdiff_t aShape[VARIDX_MAX];
+	ptrdiff_t aShape[DASIDX_MAX];
 	DasDs_shape(pDs, aShape);
 	return aShape[0] < 0 ? 0 : aShape[0];
 }
@@ -321,7 +321,7 @@ static ptrdiff_t _nItems(const DasDs* pDs, ptrdiff_t iRec)
 
 static const char* _axis(const DasDim* pDim)
 {
-	const char* s = DasDim_getAxis(pDim, 0);
+	const char* s = DasDim_axisSymAt(pDim, 0);
 	return s == NULL ? "" : s;
 }
 
@@ -330,11 +330,11 @@ static const char* _axis(const DasDim* pDim)
  * upconverter has already moved it onto the dimension. */
 static bool _isLog(const DasDim* pDim, const DasStream* pSd)
 {
-	const char* s = DasDesc_getStr((const DasDesc*)pDim, "scaleType");
+	const char* s = DasDesc_val((const DasDesc*)pDim, "scaleType");
 	if((s == NULL)&&(pSd != NULL)&&(_axis(pDim)[0] != '\0')){
 		char sName[32];
 		snprintf(sName, sizeof(sName), "%sScaleType", _axis(pDim));
-		s = DasDesc_getStr((const DasDesc*)pSd, sName);
+		s = DasDesc_val((const DasDesc*)pSd, sName);
 	}
 	return (s != NULL)&&(strcasecmp(s, "log") == 0);
 }
@@ -345,7 +345,7 @@ static bool _isLog(const DasDim* pDim, const DasStream* pSd)
 DasRender* new_DasRender(int nWidth, int nHeight)
 {
 	if((nWidth < DR_MIN_SZ)||(nWidth > DR_MAX_SZ)||(nHeight < DR_MIN_SZ)||(nHeight > DR_MAX_SZ)){
-		das_error(DASERR_VALUE, "Image size %d x %d is outside %d to %d", nWidth,
+		daserrf(DASERR_VALUE, "Image size %d x %d is outside %d to %d", nWidth,
 			nHeight, DR_MIN_SZ, DR_MAX_SZ);
 		return NULL;
 	}
@@ -354,10 +354,10 @@ DasRender* new_DasRender(int nWidth, int nHeight)
 	if(pThis != NULL){
 		pThis->pVal   = (float*)malloc(uPx * sizeof(float));
 		pThis->pCount = (uint32_t*)calloc(uPx, sizeof(uint32_t));
-		pThis->pRgba  = (ubyte*)malloc(uPx * 4);
+		pThis->pRgba  = (uint8_t*)malloc(uPx * 4);
 	}
 	if((pThis == NULL)||(pThis->pVal == NULL)||(pThis->pCount == NULL)||(pThis->pRgba == NULL)){
-		das_error(DASERR_VALUE, "Couldn't allocate a %d x %d image", nWidth, nHeight);
+		daserrf(DASERR_VALUE, "Couldn't allocate a %d x %d image", nWidth, nHeight);
 		del_DasRender(pThis);
 		return NULL;
 	}
@@ -392,9 +392,9 @@ void del_DasRender(DasRender* pThis)
 	free(pThis);
 }
 
-int DasRender_setMap(DasRender* pThis, const ubyte* pRgba)
+int DasRender_setMap(DasRender* pThis, const uint8_t* pRgba)
 {
-	if(pRgba == NULL) return das_error(DASERR_VALUE, "NULL color map");
+	if(pRgba == NULL) return daserrf(DASERR_VALUE, "NULL color map");
 	memcpy(pThis->aMap, pRgba, sizeof(pThis->aMap));
 	pThis->bDirty = true;
 	return DAS_OKAY;
@@ -498,10 +498,10 @@ static void _paintSpectro(DasRender* pThis, dr_ds* pD, ptrdiff_t iRec)
 	if((nCol < 0)||(nCol >= pThis->nW)) return;
 
 	DasAry* pZAry = _record(pD->pData, nRank, iRec, pD->nBins);
-	const ubyte* pZ = _elems(pZAry, &uN);
+	const uint8_t* pZ = _elems(pZAry, &uN);
 	if(pZ == NULL){ if(pZAry) dec_DasAry(pZAry); return; }
-	das_val_type vt = DasAry_valType(pZAry);
-	size_t uSz = das_vt_size(vt);
+	das_vt vt = DasAry_vt(pZAry);
+	size_t uSz = dasvt_size(vt);
 	if(uN > (size_t)pD->nBins) uN = pD->nBins;
 
 	int nW = pThis->nW;
@@ -546,7 +546,7 @@ static bool _offsets(DasRender* pThis, dr_ds* pD, ptrdiff_t iRec, ptrdiff_t nIte
 		double* pNew = (double*)realloc(pD->pOffPx, sizeof(double));
 		if((pNew == NULL)||!_valAt(pD->pOff, pD->bOffVaries ? iRec : 0, &r)) return false;
 		pD->pOffPx = pNew;
-		pNew[0] = Units_convertTo(UNIT_MICROSECONDS, r, DasVar_units(pD->pOff)) * pThis->rPxPerUs;
+		pNew[0] = DasUnits_convert(r, DasVar_units(pD->pOff), DASUNITS_MICROSECONDS) * pThis->rPxPerUs;
 		pD->nOff = 1;
 		return true;
 	}
@@ -554,14 +554,14 @@ static bool _offsets(DasRender* pThis, dr_ds* pD, ptrdiff_t iRec, ptrdiff_t nIte
 	int nRank = DasDs_rank(pD->pDs);
 	DasAry* pAry = _record(pD->pOff, nRank, pD->bOffVaries ? iRec : 0, nItems);
 	size_t uN = 0;
-	const ubyte* p = _elems(pAry, &uN);
+	const uint8_t* p = _elems(pAry, &uN);
 	if((p == NULL)||(uN < (size_t)nItems)){
 		if(pAry) dec_DasAry(pAry);
 		return false;
 	}
-	das_val_type vt = DasAry_valType(pAry);
-	size_t uSz = das_vt_size(vt);
-	das_units units = DasVar_units(pD->pOff);
+	das_vt vt = DasAry_vt(pAry);
+	size_t uSz = dasvt_size(vt);
+	DasUnits units = DasVar_units(pD->pOff);
 
 	double* pNew = (double*)realloc(pD->pOffPx, nItems * sizeof(double));
 	if(pNew == NULL){ dec_DasAry(pAry); return false; }
@@ -569,7 +569,7 @@ static bool _offsets(DasRender* pThis, dr_ds* pD, ptrdiff_t iRec, ptrdiff_t nIte
 	for(ptrdiff_t i = 0; i < nItems; ++i){
 		double r = 0;
 		_val(p + i*uSz, vt, &r);
-		pNew[i] = Units_convertTo(UNIT_MICROSECONDS, r, units) * pThis->rPxPerUs;
+		pNew[i] = DasUnits_convert(r, units, DASUNITS_MICROSECONDS) * pThis->rPxPerUs;
 	}
 	pD->nOff = (int)nItems;
 	dec_DasAry(pAry);
@@ -607,35 +607,35 @@ static void _paintDensity(DasRender* pThis, dr_ds* pD, ptrdiff_t iRec)
 	 * _timeAt(), so read it as a datum */
 	DasAry* pVAry = NULL;
 	size_t uN = 0;
-	const ubyte* pV = NULL;
+	const uint8_t* pV = NULL;
 	double rOne;
-	das_val_type vt = vtDouble;
+	das_vt vt = DASVT_DOUBLE;
 	if(nItems == 1){
 		if(!_valAt(pD->pData, iRec, &rOne)) return;
-		pV = (const ubyte*)&rOne;
+		pV = (const uint8_t*)&rOne;
 		uN = 1;
 	}
 	else{
 		pVAry = _record(pD->pData, nRank, iRec, nItems);
 		pV = _elems(pVAry, &uN);
 		if(pV == NULL){ if(pVAry) dec_DasAry(pVAry); return; }
-		vt = DasAry_valType(pVAry);
+		vt = DasAry_vt(pVAry);
 		if(uN > (size_t)nItems) uN = nItems;
 	}
-	size_t uSz = das_vt_size(vt);
+	size_t uSz = dasvt_size(vt);
 
 	/* Time: base per record, plus offsets or per-item times */
 	double rBase = 0;
 	DasAry* pTAry = NULL;
-	const ubyte* pT = NULL;
-	das_val_type vtT = vtUnknown;
+	const uint8_t* pT = NULL;
+	das_vt vtT = DASVT_UNK;
 	size_t uTSz = 0;
 	bool bOk = true;
 
 	if(pD->pRef != NULL){
 		bOk = _timeAt(pD->pRef, iRec, &rBase) && _offsets(pThis, pD, iRec, (ptrdiff_t)uN);
 	}
-	else if((nRank < 2)||(nItems == 1)||DasVar_degenerate(pD->pTime, 1)){
+	else if((nRank < 2)||(nItems == 1)||DasVar_isDegenerate(pD->pTime, 1)){
 		bOk = _timeAt(pD->pTime, iRec, &rBase);
 	}
 	else{
@@ -644,7 +644,7 @@ static void _paintDensity(DasRender* pThis, dr_ds* pD, ptrdiff_t iRec)
 		size_t uTN = 0;
 		pT = _elems(pTAry, &uTN);
 		bOk = (pT != NULL) && (uTN >= uN);
-		if(bOk){ vtT = DasAry_valType(pTAry); uTSz = das_vt_size(vtT); }
+		if(bOk){ vtT = DasAry_vt(pTAry); uTSz = dasvt_size(vtT); }
 	}
 	if(!bOk){
 		if(pTAry) dec_DasAry(pTAry);
@@ -653,7 +653,7 @@ static void _paintDensity(DasRender* pThis, dr_ds* pD, ptrdiff_t iRec)
 	}
 
 	double rBasePx = (rBase - pThis->rT0) * pThis->rPxPerUs;
-	das_units tUnits = (pD->pTime != NULL) ? DasVar_units(pD->pTime) : NULL;
+	DasUnits tUnits = (pD->pTime != NULL) ? DasVar_units(pD->pTime) : NULL;
 	bool bLog = pThis->bYLog;
 
 	uint64_t nBefore = pThis->nPts;
@@ -702,19 +702,19 @@ static bool _scanRange(DasRender* pThis, dr_ds* pD, ptrdiff_t iBeg, ptrdiff_t iE
 		if(nItems <= 0) continue;
 		DasAry* pAry = NULL;
 		size_t uN = 0;
-		const ubyte* p = NULL;
+		const uint8_t* p = NULL;
 		double rOne;
-		das_val_type vt = vtDouble;
+		das_vt vt = DASVT_DOUBLE;
 		if(nItems == 1){
-			if(_valAt(pD->pData, iRec, &rOne)){ p = (const ubyte*)&rOne; uN = 1; }
+			if(_valAt(pD->pData, iRec, &rOne)){ p = (const uint8_t*)&rOne; uN = 1; }
 		}
 		else{
 			pAry = _record(pD->pData, nRank, iRec, nItems);
 			p = _elems(pAry, &uN);
-			if(pAry) vt = DasAry_valType(pAry);
+			if(pAry) vt = DasAry_vt(pAry);
 		}
 		if(p != NULL){
-			size_t uSz = das_vt_size(vt);
+			size_t uSz = dasvt_size(vt);
 			for(size_t i = 0; i < uN; ++i){
 				double r;
 				if(!_val(p + i*uSz, vt, &r) || isnan(r)) continue;
@@ -934,12 +934,12 @@ static bool _spectroZCheck(DasRender* pThis)
 /* ************************************************************************* */
 /* Stream callbacks */
 
-static DasDim* _dimByName(DasDs* pDs, const char* sDim, enum dim_type dt)
+static DasDim* _dimByName(DasDs* pDs, const char* sDim, das_dimtype dt)
 {
 	size_t uDims = DasDs_numDims(pDs, dt);
 	for(size_t u = 0; u < uDims; ++u){
-		DasDim* pDim = DasDs_getDimByIdx(pDs, u, dt);
-		if(strcmp(DasDim_dim(pDim), sDim) == 0) return pDim;
+		DasDim* pDim = DasDs_dimAt(pDs, u, dt);
+		if(strcmp(DasDim_physDim(pDim), sDim) == 0) return pDim;
 	}
 	return NULL;
 }
@@ -947,19 +947,19 @@ static DasDim* _dimByName(DasDs* pDs, const char* sDim, enum dim_type dt)
 /* The time coordinate: axis x if marked, else a dimension named time */
 static DasDim* _timeDim(DasDs* pDs)
 {
-	size_t uDims = DasDs_numDims(pDs, DASDIM_COORD);
+	size_t uDims = DasDs_numDims(pDs, DASDIMTYPE_COORD);
 	for(size_t u = 0; u < uDims; ++u){
-		DasDim* pDim = DasDs_getDimByIdx(pDs, u, DASDIM_COORD);
+		DasDim* pDim = DasDs_dimAt(pDs, u, DASDIMTYPE_COORD);
 		if(strcmp(_axis(pDim), "x") == 0) return pDim;
 	}
-	return DasDs_getDim(pDs, "time", DASDIM_COORD);
+	return DasDs_physDim(pDs, "time", DASDIMTYPE_COORD);
 }
 
 static DasDim* _yDim(DasDs* pDs, const DasDim* pTime)
 {
-	size_t uDims = DasDs_numDims(pDs, DASDIM_COORD);
+	size_t uDims = DasDs_numDims(pDs, DASDIMTYPE_COORD);
 	for(size_t u = 0; u < uDims; ++u){
-		DasDim* pDim = DasDs_getDimByIdx(pDs, u, DASDIM_COORD);
+		DasDim* pDim = DasDs_dimAt(pDs, u, DASDIMTYPE_COORD);
 		if((pDim != pTime)&&(strcmp(_axis(pDim), "y") == 0)) return pDim;
 	}
 	return NULL;
@@ -968,11 +968,11 @@ static DasDim* _yDim(DasDs* pDs, const DasDim* pTime)
 /* First data dimension with numeric values */
 static DasDim* _dataDim(DasDs* pDs)
 {
-	size_t uDims = DasDs_numDims(pDs, DASDIM_DATA);
+	size_t uDims = DasDs_numDims(pDs, DASDIMTYPE_DATA);
 	for(size_t u = 0; u < uDims; ++u){
-		DasDim* pDim = DasDs_getDimByIdx(pDs, u, DASDIM_DATA);
-		DasVar* pVar = DasDim_getPointVar(pDim);
-		if((pVar != NULL)&&DasVar_isNumeric(pVar)&&(DasVar_valType(pVar) != vtTime))
+		DasDim* pDim = DasDs_dimAt(pDs, u, DASDIMTYPE_DATA);
+		DasVar* pVar = DasDim_pointVar(pDim);
+		if((pVar != NULL)&&DasVar_isNumeric(pVar)&&(DasVar_vt(pVar) != DASVT_TIME))
 			return pDim;
 	}
 	return NULL;
@@ -987,69 +987,69 @@ static bool _bindDs(DasRender* pThis, DasDs* pDs, DasDim* pTDim, DasDim* pYDim,
 	pD->pDs = pDs;
 
 	if(DasDs_rank(pDs) > 2){
-		_note(pThis, "%s: rank %d datasets aren't painted", DasDs_id(pDs), DasDs_rank(pDs));
+		_note(pThis, "%s: rank %d datasets aren't painted", DasDs_name(pDs), DasDs_rank(pDs));
 		return false;
 	}
 
 	/* Prefer REF + OFFSET over the point var, which for waveforms is a
 	 * binop and slow to read in bulk */
-	pD->pRef = DasDim_getVar(pTDim, DASVAR_REF);
-	pD->pOff = DasDim_getVar(pTDim, DASVAR_OFFSET);
+	pD->pRef = DasDim_var(pTDim, DASDIM_ROLE_REF);
+	pD->pOff = DasDim_var(pTDim, DASDIM_ROLE_OFFSET);
 	if((pD->pRef == NULL)||(pD->pOff == NULL)){
 		pD->pRef = pD->pOff = NULL;
-		pD->pTime = DasDim_getPointVar(pTDim);
+		pD->pTime = DasDim_pointVar(pTDim);
 	}
 	else
-		pD->bOffVaries = !DasVar_degenerate(pD->pOff, 0);
+		pD->bOffVaries = !DasVar_isDegenerate(pD->pOff, 0);
 
 	DasVar* pTVar = pD->pTime ? pD->pTime : pD->pRef;
-	if((pTVar == NULL)||!Units_haveCalRep(DasVar_units(pTVar))){
-		_note(pThis, "%s: no calendar time coordinate", DasDs_id(pDs));
+	if((pTVar == NULL)||!DasUnits_isTimePoint(DasVar_units(pTVar))){
+		_note(pThis, "%s: no calendar time coordinate", DasDs_name(pDs));
 		return false;
 	}
 
-	pD->pData = DasDim_getPointVar(pZDim);
-	DasAry* pAry = DasVar_getAry(pD->pData);
+	pD->pData = DasDim_pointVar(pZDim);
+	DasAry* pAry = DasVar_ary(pD->pData);
 	if(pAry != NULL){
-		const ubyte* pFill = DasAry_getFill(pAry);
+		const uint8_t* pFill = DasAry_fill(pAry);
 		if(pFill != NULL)
-			pD->bFill = _val(pFill, DasAry_valType(pAry), &(pD->rFill));
+			pD->bFill = _val(pFill, DasAry_vt(pAry), &(pD->rFill));
 	}
 
 	if(pYDim == NULL) return true;
 
 	/* Spectrogram: y coordinate values from the header */
-	pD->pY = DasDim_getPointVar(pYDim);
+	pD->pY = DasDim_pointVar(pYDim);
 	if((pD->pY == NULL)||(DasDs_rank(pDs) < 2)){
-		_note(pThis, "%s: no usable y coordinate", DasDs_id(pDs));
+		_note(pThis, "%s: no usable y coordinate", DasDs_name(pDs));
 		return false;
 	}
-	if(!DasVar_degenerate(pD->pY, 0)){
-		_note(pThis, "%s: y coordinates that vary by record aren't painted yet", DasDs_id(pDs));
+	if(!DasVar_isDegenerate(pD->pY, 0)){
+		_note(pThis, "%s: y coordinates that vary by record aren't painted yet", DasDs_name(pDs));
 		return false;
 	}
-	ptrdiff_t aShape[VARIDX_MAX];
+	ptrdiff_t aShape[DASIDX_MAX];
 	DasVar_shape(pD->pY, aShape);
 	if(aShape[1] <= 0){
-		_note(pThis, "%s: ragged y coordinates aren't painted", DasDs_id(pDs));
+		_note(pThis, "%s: ragged y coordinates aren't painted", DasDs_name(pDs));
 		return false;
 	}
 	int nBins = (int)aShape[1];
 	DasAry* pYAry = _record(pD->pY, 2, 0, nBins);
 	size_t uN = 0;
-	const ubyte* p = _elems(pYAry, &uN);
+	const uint8_t* p = _elems(pYAry, &uN);
 	double* pCtr = (double*)malloc(nBins * sizeof(double));
 	bool bOk = (p != NULL) && (uN >= (size_t)nBins) && (pCtr != NULL);
 	if(bOk){
-		das_val_type vt = DasAry_valType(pYAry);
-		size_t uSz = das_vt_size(vt);
-		das_units units = DasVar_units(pD->pY);
+		das_vt vt = DasAry_vt(pYAry);
+		size_t uSz = dasvt_size(vt);
+		DasUnits units = DasVar_units(pD->pY);
 		bool bConv = (pThis->yUnits != NULL)&&(units != pThis->yUnits)
-		             && Units_canConvert(units, pThis->yUnits);
+		             && DasUnits_canConvert(units, pThis->yUnits);
 		for(int b = 0; b < nBins; ++b){
 			double r = NAN;
 			_val(p + b*uSz, vt, &r);
-			pCtr[b] = bConv ? Units_convertTo(pThis->yUnits, r, units) : r;
+			pCtr[b] = bConv ? DasUnits_convert(r, units, pThis->yUnits) : r;
 		}
 		bOk = _binEdges(pThis, pD, pCtr, nBins);
 	}
@@ -1057,32 +1057,32 @@ static bool _bindDs(DasRender* pThis, DasDs* pDs, DasDim* pTDim, DasDim* pYDim,
 	if(pYAry) dec_DasAry(pYAry);
 	if(!bOk){
 		_freeDs(pD);
-		_note(pThis, "%s: y coordinates unreadable", DasDs_id(pDs));
+		_note(pThis, "%s: y coordinates unreadable", DasDs_name(pDs));
 		return false;
 	}
 	return true;
 }
 
 /* Decide the picture from the first dataset */
-static bool _classify(DasRender* pThis, DasStream* pSd, DasDs* pDs)
+static bool _classify(DasRender* pThis, const DasStream* pSd, DasDs* pDs)
 {
 	DasDim* pT = _timeDim(pDs);
 	DasDim* pZ = _dataDim(pDs);
 	if((pT == NULL)||(pZ == NULL)){
-		_note(pThis, "%s: needs a time coordinate and numeric data", DasDs_id(pDs));
+		_note(pThis, "%s: needs a time coordinate and numeric data", DasDs_name(pDs));
 		return false;
 	}
 	DasDim* pY = _yDim(pDs, pT);
 
-	snprintf(pThis->sTimeDim, DR_DIM_SZ, "%s", DasDim_dim(pT));
-	snprintf(pThis->sDataDim, DR_DIM_SZ, "%s", DasDim_dim(pZ));
-	DasVar* pZVar = DasDim_getPointVar(pZ);
+	snprintf(pThis->sTimeDim, DR_DIM_SZ, "%s", DasDim_physDim(pT));
+	snprintf(pThis->sDataDim, DR_DIM_SZ, "%s", DasDim_physDim(pZ));
+	DasVar* pZVar = DasDim_pointVar(pZ);
 
 	if(pY != NULL){
 		pThis->nKind = DASRENDER_SPECTRO;
-		snprintf(pThis->sYDim, DR_DIM_SZ, "%s", DasDim_dim(pY));
+		snprintf(pThis->sYDim, DR_DIM_SZ, "%s", DasDim_physDim(pY));
 		pThis->bYLog = _isLog(pY, pSd);
-		DasVar* pYVar = DasDim_getPointVar(pY);
+		DasVar* pYVar = DasDim_pointVar(pY);
 		pThis->yUnits = (pYVar != NULL) ? DasVar_units(pYVar) : NULL;
 		pThis->bZLog = _isLog(pZ, pSd);
 		pThis->zUnits = DasVar_units(pZVar);
@@ -1095,10 +1095,13 @@ static bool _classify(DasRender* pThis, DasStream* pSd, DasDs* pDs)
 	return true;
 }
 
-static DasErrCode _onDsDesc(DasStream* pSd, int nPktId, DasDs* pDs, void* pUser)
+static das_errcode _onDsDesc(DasDs* pDs, int nPktId, void* pUser)
 {
 	DasRender* pThis = (DasRender*)pUser;
 	if(pThis->nKind == DASRENDER_UNUSABLE) return DAS_OKAY;
+
+	/* A dataset read from a stream is always a child of that stream */
+	const DasStream* pSd = (const DasStream*)DasDesc_parent((const DasDesc*)pDs);
 
 	if(pThis->nKind == DASRENDER_NONE){
 		if(!_classify(pThis, pSd, pDs)){
@@ -1108,15 +1111,15 @@ static DasErrCode _onDsDesc(DasStream* pSd, int nPktId, DasDs* pDs, void* pUser)
 	}
 
 	/* Same physical dimensions as the first, or skip */
-	DasDim* pT = _dimByName(pDs, pThis->sTimeDim, DASDIM_COORD);
-	DasDim* pZ = _dimByName(pDs, pThis->sDataDim, DASDIM_DATA);
+	DasDim* pT = _dimByName(pDs, pThis->sTimeDim, DASDIMTYPE_COORD);
+	DasDim* pZ = _dimByName(pDs, pThis->sDataDim, DASDIMTYPE_DATA);
 	DasDim* pY = NULL;
 	if(pThis->nKind == DASRENDER_SPECTRO)
-		pY = _dimByName(pDs, pThis->sYDim, DASDIM_COORD);
+		pY = _dimByName(pDs, pThis->sYDim, DASDIMTYPE_COORD);
 	if((pT == NULL)||(pZ == NULL)||((pThis->nKind == DASRENDER_SPECTRO)&&(pY == NULL))
-	   ||(DasDim_getPointVar(pZ) == NULL)){
+	   ||(DasDim_pointVar(pZ) == NULL)){
 		++(pThis->nSkipped);
-		_note(pThis, "%s: dimensions differ from the first dataset, skipped", DasDs_id(pDs));
+		_note(pThis, "%s: dimensions differ from the first dataset, skipped", DasDs_name(pDs));
 		return DAS_OKAY;
 	}
 
@@ -1164,7 +1167,7 @@ static DasErrCode _onDsDesc(DasStream* pSd, int nPktId, DasDs* pDs, void* pUser)
 	return DAS_OKAY;
 }
 
-static DasErrCode _onDsData(DasStream* pSd, int nPktId, DasDs* pDs, void* pUser)
+static das_errcode _onDsData(DasDs* pDs, int nPktId, void* pUser)
 {
 	DasRender* pThis = (DasRender*)pUser;
 	if(pThis->nKind <= DASRENDER_NONE) return DAS_OKAY;
@@ -1203,31 +1206,14 @@ static DasErrCode _onDsData(DasStream* pSd, int nPktId, DasDs* pDs, void* pUser)
 	return DAS_OKAY;
 }
 
-/* The descriptor is about to be freed; forget it.  Its pixels stay, but a
- * later repaint can't redraw them. */
-static DasErrCode _onRedef(DasStream* pSd, DasDesc* pDesc, void* pUser)
-{
-	DasRender* pThis = (DasRender*)pUser;
-	for(int i = 0; i < pThis->nDs; ++i){
-		if((DasDesc*)(pThis->pDs[i].pDs) != pDesc) continue;
-		_freeDs(pThis->pDs + i);
-		memmove(pThis->pDs + i, pThis->pDs + i + 1, (pThis->nDs - i - 1) * sizeof(dr_ds));
-		--(pThis->nDs);
-		break;
-	}
-	return DAS_OKAY;
-}
-
 int DasRender_attach(DasRender* pThis, DasWasmRdr* pRdr)
 {
-	StreamHandler_init(&(pThis->hndlr), pThis);
-	/* StreamHandler_init installs default exception and comment handlers;
-	 * the reader's own capture handlers already deal with both */
-	pThis->hndlr.exceptionHandler = NULL;
-	pThis->hndlr.commentHandler   = NULL;
-	pThis->hndlr.dsDescHandler    = _onDsDesc;
-	pThis->hndlr.dsDataHandler    = _onDsData;
-	pThis->hndlr.pktRedefHandler  = _onRedef;
+	/* No onComment or onClose: the reader's own processor captures progress
+	 * and exceptions.  No redefinition handler either, das2C keeps a dataset
+	 * alive until its stream is freed, even after its packet ID is reused. */
+	init_DasIOProc(&(pThis->hndlr), pThis);
+	pThis->hndlr.onDs     = _onDsDesc;
+	pThis->hndlr.onDsData = _onDsData;
 	return DasWasmRdr_addProcessor(pRdr, &(pThis->hndlr));
 }
 
@@ -1236,20 +1222,20 @@ int DasRender_attach(DasRender* pThis, DasWasmRdr* pRdr)
 
 int DasRender_setX(DasRender* pThis, const char* sBeg, const char* sEnd)
 {
-	das_time dtBeg, dtEnd;
-	if((sBeg == NULL)||(sEnd == NULL)||!dt_parsetime(&dtBeg, sBeg)||!dt_parsetime(&dtEnd, sEnd))
-		return das_error(DASERR_VALUE, "Couldn't parse time range '%s' to '%s'",
+	DasTime dtBeg, dtEnd;
+	if((sBeg == NULL)||(sEnd == NULL)||!DasTime_fromStr(&dtBeg, sBeg)||!DasTime_fromStr(&dtEnd, sEnd))
+		return daserrf(DASERR_VALUE, "Couldn't parse time range '%s' to '%s'",
 			sBeg ? sBeg : "(null)", sEnd ? sEnd : "(null)");
 
-	double rT0 = Units_convertFromDt(UNIT_US2000, &dtBeg);
-	double rT1 = Units_convertFromDt(UNIT_US2000, &dtEnd);
+	double rT0 = DasTime_toPoint(&dtBeg, DASUNITS_US2000);
+	double rT1 = DasTime_toPoint(&dtEnd, DASUNITS_US2000);
 	if(rT1 <= rT0)
-		return das_error(DASERR_VALUE, "Time range '%s' to '%s' is empty", sBeg, sEnd);
+		return daserrf(DASERR_VALUE, "Time range '%s' to '%s' is empty", sBeg, sEnd);
 
 	/* Repainting here would read datasets outside a stream callback, and
 	 * by now the reader that owns them may be gone */
 	if(pThis->nDs > 0)
-		return das_error(DASERR_VALUE, "Set the time range before data arrive");
+		return daserrf(DASERR_VALUE, "Set the time range before data arrive");
 
 	pThis->rT0 = rT0;
 	pThis->rT1 = rT1;
@@ -1258,11 +1244,11 @@ int DasRender_setX(DasRender* pThis, const char* sBeg, const char* sEnd)
 	return DAS_OKAY;
 }
 
-const ubyte* DasRender_colorize(DasRender* pThis)
+const uint8_t* DasRender_colorize(DasRender* pThis)
 {
 	size_t uPx = (size_t)pThis->nW * pThis->nH;
-	ubyte* pOut = pThis->pRgba;
-	const ubyte* pMap = pThis->aMap;
+	uint8_t* pOut = pThis->pRgba;
+	const uint8_t* pMap = pThis->aMap;
 
 	if(pThis->nKind == DASRENDER_SPECTRO){
 		if(_spectroZCheck(pThis)){
@@ -1332,6 +1318,6 @@ int DasRender_isLog(const DasRender* pThis, int bColor)
 
 const char* DasRender_units(const DasRender* pThis, int bColor)
 {
-	das_units u = bColor ? pThis->zUnits : pThis->yUnits;
-	return (u == NULL) ? "" : Units_toStr(u);
+	DasUnits u = bColor ? pThis->zUnits : pThis->yUnits;
+	return (u == NULL) ? "" : DasUnits_toStr(u);
 }

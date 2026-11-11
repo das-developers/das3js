@@ -11,7 +11,7 @@ Usage:
     dasflex_cgi.py [--root DIR] [--port N]
 
 --root is the dasFlex build tree holding test_srv/ (default ../dasflex,
-relative to the das2js checkout).  Port 0 picks a free one; the chosen
+relative to the das3js checkout).  Port 0 picks a free one; the chosen
 port is printed as the first line of output, which a caller can read.
 
 The URL space mirrors the test_srv config: SERVER_URL there is

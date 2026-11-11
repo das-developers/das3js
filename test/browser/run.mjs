@@ -52,7 +52,7 @@ const MOUNTS = [
  * back): as a second origin it gets the CORS preflight a remote das server
  * gets, and same origin would bring up Firefox's own login dialog.  The
  * password's non-ASCII letters test basicAuth()'s encoding. */
-const AUTH_REALM = 'das2js test';
+const AUTH_REALM = 'das3js test';
 const AUTH_HDR = 'Basic ' + Buffer.from('tester:p\u00e4ss\u03c0', 'utf8').toString('base64');
 const CORS = {
 	'Access-Control-Allow-Origin': '*',
@@ -234,7 +234,10 @@ server.listen(listenPort, '127.0.0.1', async () => {
 
 	/* A throwaway profile: Firefox refuses to start without one it can
 	 * write, and we want prefs that a personal profile should never carry.
-	 * It lives under ./tmp by project convention, not the system temp dir. */
+	 * It lives under ./tmp by project convention, not the system temp dir.
+	 * tmp/ is gitignored, so a fresh clone doesn't have it; mkdtempSync
+	 * won't make parents, and recursive mkdir is a no-op when it exists. */
+	fs.mkdirSync(path.join(ROOT, 'tmp'), {recursive: true});
 	const profile = fs.mkdtempSync(path.join(ROOT, 'tmp', 'ffprofile-'));
 	fs.writeFileSync(path.join(profile, 'user.js'), [
 		/* console.log() -> stdout of the firefox process */

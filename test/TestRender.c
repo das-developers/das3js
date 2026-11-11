@@ -56,7 +56,7 @@ static DasRender* paintFile(
 	DasRender_setX(pRen, sBeg, sEnd);
 	DasRender_attach(pRen, pRdr);
 
-	static ubyte aBuf[65536];
+	static uint8_t aBuf[65536];
 	if(uChunk > sizeof(aBuf)) uChunk = sizeof(aBuf);
 	size_t uRead;
 	int nRet = 0;
@@ -82,20 +82,20 @@ static DasRender* paintFile(
 }
 
 /* Count of columns with at least one non-black pixel, and the last one */
-static int paintedCols(const ubyte* pRgba, int* pLast)
+static int paintedCols(const uint8_t* pRgba, int* pLast)
 {
 	int nCols = 0;
 	*pLast = -1;
 	for(int c = 0; c < WIDTH; ++c){
 		for(int r = 0; r < HEIGHT; ++r){
-			const ubyte* p = pRgba + ((size_t)r*WIDTH + c)*4;
+			const uint8_t* p = pRgba + ((size_t)r*WIDTH + c)*4;
 			if(p[0] | p[1] | p[2]){ ++nCols; *pLast = c; break; }
 		}
 	}
 	return nCols;
 }
 
-static void writePpm(const char* sName, const ubyte* pRgba)
+static void writePpm(const char* sName, const uint8_t* pRgba)
 {
 	if(g_sOutDir == NULL) return;
 	char sPath[512];
@@ -131,7 +131,7 @@ int main(int argc, char** argv)
 		g_bLenient = true;
 		DasRender* pRen = paintFile(argv[2], argv[3], argv[4], 65536);
 		CHECK(pRen != NULL, "read");
-		const ubyte* pRgba = DasRender_colorize(pRen);
+		const uint8_t* pRgba = DasRender_colorize(pRen);
 		describe(argv[2], pRen);
 		writePpm("extra", pRgba);
 		del_DasRender(pRen);
@@ -151,7 +151,7 @@ int main(int argc, char** argv)
 	CHECK(DasRender_range(pRen, 0, 1) > 1e6, "survey y range covers every band");
 	CHECK(DasRender_range(pRen, 0, 0) < 48.83, "survey y range covers the lowest bin");
 
-	const ubyte* pRgba = DasRender_colorize(pRen);
+	const uint8_t* pRgba = DasRender_colorize(pRen);
 	int nLast;
 	int nCols = paintedCols(pRgba, &nLast);
 	printf("INFO: survey: %d of %d columns painted, last %d\n", nCols, WIDTH, nLast);
@@ -162,7 +162,7 @@ int main(int argc, char** argv)
 
 	/* Peak-hold doesn't care how the records were batched: big chunks
 	 * deliver many packets per feed, small ones split packets */
-	ubyte* pFirst = (ubyte*)malloc((size_t)WIDTH*HEIGHT*4);
+	uint8_t* pFirst = (uint8_t*)malloc((size_t)WIDTH*HEIGHT*4);
 	memcpy(pFirst, pRgba, (size_t)WIDTH*HEIGHT*4);
 	del_DasRender(pRen);
 	pRen = paintFile(sSurvey, sSBeg, sSEnd, 65536);
@@ -237,7 +237,7 @@ int main(int argc, char** argv)
 	DasRender_attach(pRen, pRdr);
 	FILE* pFile = fopen(sSurvey, "rb");
 	CHECK(pFile != NULL, "survey open");
-	static ubyte aBuf[4096];
+	static uint8_t aBuf[4096];
 	size_t uRead;
 	while((uRead = fread(aBuf, 1, sizeof(aBuf), pFile)) > 0)
 		CHECK(DasWasmRdr_feed(pRdr, aBuf, (int)uRead) == 0, "feed without x range");

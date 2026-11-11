@@ -15,7 +15,7 @@
  *                to the node runner (make headless_test); implies internal
  */
 
-import {load, DasError} from '../build/das2js.mjs';
+import {load, DasError} from '../build/das3js.mjs';
 import '../build/das-catalog-tree.mjs';     /* defines <das-catalog-tree> */
 
 const tree = document.getElementById('tree');

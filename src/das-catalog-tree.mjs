@@ -1,5 +1,5 @@
 /* Copyright (C) 2026 Chris Piker
- * This file is part of das2js, das stream utilities for browsers.
+ * This file is part of das3js, das stream utilities for browsers.
  * See the LICENSE file in the repository root for terms.
  */
 
@@ -8,8 +8,8 @@
  *
  * Usage:
  *
- *   import {load} from 'das2js';
- *   import 'das2js/catalog-tree';         // defines the tag
+ *   import {load} from 'das3js';
+ *   import 'das3js/catalog-tree';         // defines the tag
  *
  *   const tree = document.querySelector('das-catalog-tree');
  *   tree.catalog = (await load()).newCatalog();
@@ -255,7 +255,7 @@ export class DasCatalogTree extends HTMLElement {
 	}
 
 	/* A Collection or SourceSet with exactly one child das2C can load
-	 * (entry.loadable, from dassrc_loadable()) stands for that child: the
+	 * (entry.loadable, from DasSrc_loadable()) stands for that child: the
 	 * row keeps its label and becomes the child's row, with the container
 	 * as parent.  How many children there are is only known once the
 	 * container loads, so #item draws these rows as sources up front; one

@@ -1,4 +1,4 @@
-/* Browser-side checks of src/das2js.mjs, the JavaScript twin of
+/* Browser-side checks of src/das3js.mjs, the JavaScript twin of
  * test/TestWasm.c.  Same fixtures, same walk, same self-consistency checks,
  * but through the ES module rather than the C functions directly, so what
  * is tested here is the marshalling, the TypedArray construction and the
@@ -9,7 +9,7 @@
  * result).  The runner is optional; served from anywhere else the page
  * skips the POSTs and still works. */
 
-import {load, DasError, basicAuth} from '../build/das2js.mjs';
+import {load, DasError, basicAuth} from '../build/das3js.mjs';
 
 const out = document.getElementById('out');
 let failed = false;
@@ -608,7 +608,7 @@ async function authChecks(d)
 		}
 		catch(e){
 			check(e instanceof DasError && e.status === 401, `${what}: ${e.name} status ${e.status}: ${e.message}`);
-			check(e.realm === 'das2js test', `${what}: realm ${e.realm}`);
+			check(e.realm === 'das3js test', `${what}: realm ${e.realm}`);
 		}
 	}
 

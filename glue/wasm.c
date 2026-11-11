@@ -1,6 +1,6 @@
 /* Copyright (C) 2026 Chris Piker
  *
- * This file is part of das2js, das stream utilities for browsers.
+ * This file is part of das3js, das stream utilities for browsers.
  * See the LICENSE file in the repository root for terms.
  */
 
@@ -19,46 +19,61 @@
 #include <math.h>
 
 #include <das3/core.h>
-#include <das3/gen_priv.h>
 #include <das3/form.h>
+
+/* Private das2C headers, for _jb_source only.  
+
+   Candidate for upstream: a public sequence accessor, after which
+      these two includes can go.
+
+   The value generators (DasGen) have no public face, but a
+   sequence's intercept and slopes are part of the snapshot contract 
+   and theres no public access for them.  gen_p.h allows access for 
+   statically linked programs like this one.  Contact upstream and
+   ask for a public interface.  
+*/
+#include <das3/var_p.h>
+#include <das3/gen_p.h>
+
 #include "wasm.h"
 
 /* ************************************************************************* */
 /* Library level */
 
-#define DASWASM_ERR_SZ 1024
+/* das2C keeps no copy of an error message: daserrf() hands it to
+   the log hook and returns.  A foreign caller asks for the text after the
+   failing call has returned, so the hook keeps the newest one here.  The wasm
+   target is single threaded, so a static is fine. */
+static char g_sLastErr[DASLOG_MSG_SZ] = {'\0'};
+
+/* Runs inside das2C's logger: may not call back into das2C except for
+   daslog_stderr(), see log.h. */
+static void _daswasm_onLog(const DasLogMsg* pMsg, void* pUser)
+{
+	(void)pUser;
+	if(pMsg->errCode != DAS_OKAY)
+		snprintf(g_sLastErr, sizeof(g_sLastErr), "%s", pMsg->msg);
+
+	/* Errors reach the console too: emscripten maps stderr there */
+	daslog_stderr(pMsg, NULL);
+}
 
 void daswasm_init(const char* sProgName)
 {
-	/* The buffer size argument both sizes the message store and turns on
-	 * error saving; without it das_get_error has nothing to report */
-	das_init(sProgName, DASERR_DIS_RET, DASWASM_ERR_SZ, DASLOG_WARN, NULL);
+	/* daslib_init copies the hook, so a local is fine */
+	DasLogHook hook = {_daswasm_onLog, NULL};
+	daslib_init(sProgName, DASERRDISP_RET, DASLOG_WARN, &hook);
 }
 
-const char* daswasm_lastError(void)
-{
-	/* das_get_error returns a heap copy each call; fold it into a static
-	 * so the foreign caller borrows rather than owns.  The wasm target is
-	 * single threaded, so a static is fine. */
-	static char sBuf[DASWASM_ERR_SZ] = {'\0'};
+const char* daswasm_lastError(void){ return g_sLastErr; }
 
-	das_error_msg* pMsg = das_get_error();
-	sBuf[0] = '\0';
-	if(pMsg != NULL){
-		if(pMsg->message != NULL){
-			strncpy(sBuf, pMsg->message, DASWASM_ERR_SZ - 1);
-			sBuf[DASWASM_ERR_SZ - 1] = '\0';
-		}
-		das_error_free(pMsg);
-	}
-	return sBuf;
-}
+void daswasm_clearError(void){ g_sLastErr[0] = '\0'; }
 
-int daswasm_idxRagged(void){ return VARIDX_RAGGED; }
+int daswasm_idxRagged(void){ return DASIDX_RAGGED; }
 
-int daswasm_idxUnused(void){ return VARIDX_UNUSED; }
+int daswasm_idxUnused(void){ return DASIDX_UNUSED; }
 
-int daswasm_idxBorrow(void){ return VARIDX_BORROW; }
+int daswasm_idxBorrow(void){ return DASIDX_BORROW; }
 
 /* ************************************************************************* */
 /* Reader context */
@@ -67,42 +82,56 @@ int daswasm_idxBorrow(void){ return VARIDX_BORROW; }
 
 struct das_wasm_rdr {
 	DasIO* pIo;
-	DasDsBldr* pBldr;
-	StreamHandler oobs;        /* progress & exception capture callbacks */
+	DasIOProc oobs;            /* progress & exception capture callbacks */
 	int nTaskSize;
 	int nProgress;
 	char sExcept[DASWASM_EXCEPT_SZ];
 };
 
-static DasErrCode _DasWasmRdr_onComment(OobComment* pCmt, void* pUser)
-{
+static das_errcode _DasWasmRdr_onComment(
+	DasStream* pSd, const DasComment* pCmt, void* pUser
+){
 	DasWasmRdr* pThis = (DasWasmRdr*)pUser;
+	const char* sType = DasComment_get(pCmt, "type");
+	const char* sVal  = DasComment_get(pCmt, "value");
 
-	if((pCmt->sType == NULL)||(pCmt->sVal == NULL))
+	if((sType == NULL)||(sVal == NULL))
 		return DAS_OKAY;
 
-	if(strcmp(pCmt->sType, "taskProgress") == 0)
-		sscanf(pCmt->sVal, "%d", &(pThis->nProgress));
-	else if(strcmp(pCmt->sType, "taskSize") == 0)
-		sscanf(pCmt->sVal, "%d", &(pThis->nTaskSize));
+	if(strcmp(sType, "taskProgress") == 0)
+		sscanf(sVal, "%d", &(pThis->nProgress));
+	else if(strcmp(sType, "taskSize") == 0)
+		sscanf(sVal, "%d", &(pThis->nTaskSize));
 
 	return DAS_OKAY;
 }
 
-static DasErrCode _DasWasmRdr_onExcept(OobExcept* pEx, void* pUser)
-{
-	DasWasmRdr* pThis = (DasWasmRdr*)pUser;
+/* Exceptions arrive only here, at the end of the stream, since an
+   exception ends the stream. 
 
-	if(pEx->sMsg != NULL){
-		strncpy(pThis->sExcept, pEx->sMsg, DASWASM_EXCEPT_SZ - 1);
-		pThis->sExcept[DASWASM_EXCEPT_SZ - 1] = '\0';
-	}
+   Returning DAS_OKAY matters: with no onClose anywhere, das2C's default
+   fails the read on any exception other than "no data", but an in-band
+   exception is data about the query and the caller reads it from 
+   DasWasmRdr_exception(). 
+*/
+static das_errcode _DasWasmRdr_onClose(
+	DasStream* pSd, const DasExcept* pEx, void* pUser
+){
+	DasWasmRdr* pThis = (DasWasmRdr*)pUser;
+	const char* sMsg = (pEx != NULL) ? DasExcept_msg(pEx) : NULL;
+
+	if(sMsg != NULL)
+		snprintf(pThis->sExcept, DASWASM_EXCEPT_SZ, "%s", sMsg);
 	return DAS_OKAY;
 }
 
 DasWasmRdr* new_DasWasmRdr(void)
 {
 	DasWasmRdr* pThis = (DasWasmRdr*)calloc(1, sizeof(DasWasmRdr));
+	if(pThis == NULL){
+		daserrf(DASERR_IO, "Couldn't allocate a reader");
+		return NULL;
+	}
 	pThis->nTaskSize = -1;
 	pThis->nProgress = -1;
 
@@ -110,23 +139,29 @@ DasWasmRdr* new_DasWasmRdr(void)
 		free(pThis);
 		return NULL;
 	}
-	DasIO_setModel(pThis->pIo, STREAM_MODEL_V3);  /* foreign callers only see the das3 model */
+	DasIO_setModel(pThis->pIo, DASIOMODEL_V3);  /* foreign callers only see the das3 model */
 
-	pThis->pBldr = new_DasDsBldr();
-	DasIO_addProcessor(pThis->pIo, (StreamHandler*)pThis->pBldr);
+	/* DasIO builds the datasets itself; by default it drops each packet's
+	   records before decoding the next.  Keep every record, the caller walks
+	   the whole stream. */
+	DasIO_setAccum(pThis->pIo, true);
 
-	pThis->oobs.commentHandler = _DasWasmRdr_onComment;
-	pThis->oobs.exceptionHandler = _DasWasmRdr_onExcept;
-	pThis->oobs.userData = pThis;
-	DasIO_addProcessor(pThis->pIo, &(pThis->oobs));
+	init_DasIOProc(&(pThis->oobs), pThis);
+	pThis->oobs.onComment = _DasWasmRdr_onComment;
+	pThis->oobs.onClose   = _DasWasmRdr_onClose;
+	if(DasIO_addProc(pThis->pIo, &(pThis->oobs)) < 0){
+		del_DasIO(pThis->pIo);
+		free(pThis);
+		return NULL;
+	}
 
 	return pThis;
 }
 
-int DasWasmRdr_feed(DasWasmRdr* pThis, const ubyte* pData, int nLen)
+int DasWasmRdr_feed(DasWasmRdr* pThis, const uint8_t* pData, int nLen)
 {
 	if(nLen < 0)
-		return das_error(DASERR_IO, "Negative chunk length");
+		return daserrf(DASERR_IO, "Negative chunk length");
 	return DasIO_feed(pThis->pIo, pData, (size_t)nLen);
 }
 
@@ -137,14 +172,12 @@ int DasWasmRdr_end(DasWasmRdr* pThis)
 
 DasStream* DasWasmRdr_stream(DasWasmRdr* pThis)
 {
-	return DasDsBldr_getStream(pThis->pBldr);
+	return DasIO_getStream(pThis->pIo);
 }
 
 DasStream* DasWasmRdr_take(DasWasmRdr* pThis)
 {
-	DasStream* pSd = DasDsBldr_getStream(pThis->pBldr);
-	DasDsBldr_release(pThis->pBldr);
-	return pSd;
+	return DasIO_takeStream(pThis->pIo);
 }
 
 int DasWasmRdr_progress(const DasWasmRdr* pThis){ return pThis->nProgress; }
@@ -155,41 +188,35 @@ const char* DasWasmRdr_exception(const DasWasmRdr* pThis){ return pThis->sExcept
 
 void del_DasWasmRdr(DasWasmRdr* pThis)
 {
-	del_DasIO(pThis->pIo);
-	del_DasDsBldr(pThis->pBldr);  /* frees the stream too, unless taken */
+	del_DasIO(pThis->pIo);  /* frees the stream too, unless taken */
 	free(pThis);
 }
 
-int DasWasmRdr_addProcessor(DasWasmRdr* pThis, StreamHandler* pProc)
+int DasWasmRdr_addProcessor(DasWasmRdr* pThis, DasIOProc* pProc)
 {
-	/* DasIO_addProcessor returns a slot count or a negated error */
-	int nRet = DasIO_addProcessor(pThis->pIo, pProc);
+	/* DasIO_addProc returns a slot count or a negated error */
+	int nRet = DasIO_addProc(pThis->pIo, pProc);
 	return (nRet < 0) ? -nRet : DAS_OKAY;
 }
 
-void daswasm_stream_free(DasStream* pSd){ del_DasStream(pSd); }
+void daswasm_stream_free(DasStream* pSd){ del_DasDesc((DasDesc*)pSd); }
 
 /* ************************************************************************* */
 /* Tree walk */
 
+/* Datasets that lost their packet ID to a redefinition stay attached, and
+   are counted and visited here, see "Several datasets under one ID" in
+   das3/stream.h.  So the index of a dataset never changes once assigned. */
 int daswasm_strm_dsCount(DasStream* pSd)
 {
-	int nPktId = 0, nSets = 0;
-	DasDesc* pDesc = NULL;
-	while((pDesc = DasStream_nextDesc(pSd, &nPktId)) != NULL){
-		if(pDesc->type == DATASET)
-			++nSets;
-	}
-	return nSets;
+	return (int)DasStream_numDesc(pSd, DASDESCTYPE_DS);
 }
 
 DasDs* daswasm_strm_dsAt(DasStream* pSd, int i)
 {
-	int nPktId = 0, nSets = 0;
+	int nSets = 0;
 	DasDesc* pDesc = NULL;
-	while((pDesc = DasStream_nextDesc(pSd, &nPktId)) != NULL){
-		if(pDesc->type != DATASET)
-			continue;
+	while((pDesc = DasStream_nextDesc(pSd, pDesc, DASDESCTYPE_DS)) != NULL){
 		if(nSets == i)
 			return (DasDs*)pDesc;
 		++nSets;
@@ -199,28 +226,28 @@ DasDs* daswasm_strm_dsAt(DasStream* pSd, int i)
 
 int daswasm_desc_propCount(const DasDesc* pDesc)
 {
-	return (int)DasDesc_length(pDesc);
+	return (int)DasDesc_numProps(pDesc);
 }
 
 const char* daswasm_desc_propName(const DasDesc* pDesc, int i)
 {
-	const DasProp* pProp = DasDesc_getPropByIdx(pDesc, (size_t)i);
+	const DasProp* pProp = DasDesc_propAt(pDesc, (size_t)i);
 	return (pProp != NULL) ? DasProp_name(pProp) : NULL;
 }
 
 const char* daswasm_desc_propValue(const DasDesc* pDesc, int i)
 {
-	const DasProp* pProp = DasDesc_getPropByIdx(pDesc, (size_t)i);
+	const DasProp* pProp = DasDesc_propAt(pDesc, (size_t)i);
 	return (pProp != NULL) ? DasProp_value(pProp) : NULL;
 }
 
 const char* daswasm_desc_propType(const DasDesc* pDesc, int i)
 {
-	const DasProp* pProp = DasDesc_getPropByIdx(pDesc, (size_t)i);
+	const DasProp* pProp = DasDesc_propAt(pDesc, (size_t)i);
 	return (pProp != NULL) ? DasProp_typeStr3(pProp) : NULL;
 }
 
-const char* daswasm_ds_id(const DasDs* pDs){ return DasDs_id(pDs); }
+const char* daswasm_ds_id(const DasDs* pDs){ return DasDs_name(pDs); }
 
 const char* daswasm_ds_group(const DasDs* pDs){ return DasDs_group(pDs); }
 
@@ -228,29 +255,29 @@ int daswasm_ds_rank(const DasDs* pDs){ return DasDs_rank(pDs); }
 
 int daswasm_ds_shapeAt(const DasDs* pDs, int i)
 {
-	ptrdiff_t aShape[VARIDX_MAX] = VARIDX_INIT_UNUSED;
+	ptrdiff_t aShape[DASIDX_MAX] = DASIDX_INIT_UNUSED;
 	int nRank = DasDs_shape(pDs, aShape);
 	if((i < 0)||(i >= nRank))
-		return VARIDX_UNUSED;
+		return DASIDX_UNUSED;
 	return (int)aShape[i];
 }
 
 int daswasm_ds_dimCount(const DasDs* pDs, int bCoord)
 {
-	return (int)DasDs_numDims(pDs, bCoord ? DASDIM_COORD : DASDIM_DATA);
+	return (int)DasDs_numDims(pDs, bCoord ? DASDIMTYPE_COORD : DASDIMTYPE_DATA);
 }
 
 DasDim* daswasm_ds_dimAt(DasDs* pDs, int i, int bCoord)
 {
 	if(i < 0) return NULL;
-	return DasDs_getDimByIdx(pDs, (size_t)i, bCoord ? DASDIM_COORD : DASDIM_DATA);
+	return DasDs_dimAt(pDs, (size_t)i, bCoord ? DASDIMTYPE_COORD : DASDIMTYPE_DATA);
 }
 
-const char* daswasm_dim_id(const DasDim* pDim){ return DasDim_id(pDim); }
+const char* daswasm_dim_id(const DasDim* pDim){ return DasDim_name(pDim); }
 
 int daswasm_dim_isCoord(const DasDim* pDim)
 {
-	return (DasDim_type(pDim) == DASDIM_COORD) ? 1 : 0;
+	return (DasDim_type(pDim) == DASDIMTYPE_COORD) ? 1 : 0;
 }
 
 int daswasm_dim_varCount(const DasDim* pDim){ return (int)DasDim_numVars(pDim); }
@@ -258,13 +285,13 @@ int daswasm_dim_varCount(const DasDim* pDim){ return (int)DasDim_numVars(pDim); 
 DasVar* daswasm_dim_varAt(DasDim* pDim, int i)
 {
 	if(i < 0) return NULL;
-	return DasDim_getVarByIdx(pDim, (size_t)i);
+	return DasDim_varAt(pDim, (size_t)i);
 }
 
 const char* daswasm_dim_roleAt(DasDim* pDim, int i)
 {
 	if(i < 0) return NULL;
-	return DasDim_getRoleByIdx(pDim, (size_t)i);
+	return DasDim_roleAt(pDim, (size_t)i);
 }
 
 /* ************************************************************************* */
@@ -278,39 +305,39 @@ const char* daswasm_var_units(const DasVar* pVar)
 
 const char* daswasm_var_valType(const DasVar* pVar)
 {
-	das_val_type vt = DasVar_valType(pVar);
+	das_vt vt = DasVar_vt(pVar);
 
 	/* A composite (vector, matrix, complex...) is a run of simple storage
 	 * elements plus a formalism; the type a foreign caller must map to a
 	 * typed array is the ELEMENT type.  Geometry comes from the intrinsic
 	 * shape, meaning from the form -- neither changes the bytes. */
-	if(vt == vtComposite)
-		vt = (das_val_type)DasVar_elemType(pVar);
+	if(vt == DASVT_COMP)
+		vt = (das_vt)DasVar_et(pVar);
 
-	return das_vt_toStr(vt);
+	return dasvt_name(vt);
 }
 
 int daswasm_var_shapeAt(const DasVar* pVar, int i)
 {
-	ptrdiff_t aShape[VARIDX_MAX] = VARIDX_INIT_UNUSED;
+	ptrdiff_t aShape[DASIDX_MAX] = DASIDX_INIT_UNUSED;
 	int nRank = DasVar_shape(pVar, aShape);
 	if((i < 0)||(i >= nRank))
-		return VARIDX_UNUSED;
+		return DASIDX_UNUSED;
 	return (int)aShape[i];
 }
 
 int daswasm_var_intrRank(const DasVar* pVar)
 {
-	ptrdiff_t aShape[VARIDX_MAX - 1] = {0};
+	ptrdiff_t aShape[DASIDX_MAX - 1] = {0};
 	return DasVar_intrShape(pVar, aShape);
 }
 
 int daswasm_var_intrShapeAt(const DasVar* pVar, int i)
 {
-	ptrdiff_t aShape[VARIDX_MAX - 1] = {0};
+	ptrdiff_t aShape[DASIDX_MAX - 1] = {0};
 	int nRank = DasVar_intrShape(pVar, aShape);
 	if((i < 0)||(i >= nRank))
-		return VARIDX_UNUSED;
+		return DASIDX_UNUSED;
 	return (int)aShape[i];
 }
 
@@ -324,13 +351,13 @@ int daswasm_var_isNumeric(const DasVar* pVar)
 	return DasVar_isNumeric(pVar) ? 1 : 0;
 }
 
-DasAry* daswasm_var_ary(DasVar* pVar){ return DasVar_getAry(pVar); }
+DasAry* daswasm_var_ary(DasVar* pVar){ return DasVar_ary(pVar); }
 
 DasAry* daswasm_var_qubeLike(DasVar* pVar, const DasVar* pShapeFrom)
 {
-	ptrdiff_t aShape[VARIDX_MAX] = VARIDX_INIT_UNUSED;
+	ptrdiff_t aShape[DASIDX_MAX] = DASIDX_INIT_UNUSED;
 	int nRank = DasVar_shape(pVar, aShape);
-	return DasVar_materializeQube(pVar, nRank, NULL, NULL, pShapeFrom);
+	return new_DasAry_materializeQube(pVar, nRank, NULL, NULL, pShapeFrom);
 }
 
 DasAry* daswasm_var_qube(DasVar* pVar)
@@ -343,40 +370,40 @@ DasAry* daswasm_var_qube(DasVar* pVar)
 
 const char* daswasm_ary_valType(const DasAry* pAry)
 {
-	return DasAry_valTypeStr(pAry);
+	return DasAry_vtName(pAry);
 }
 
 int daswasm_ary_valSize(const DasAry* pAry){ return (int)DasAry_valSize(pAry); }
 
 int daswasm_ary_rank(const DasAry* pAry)
 {
-	ptrdiff_t aShape[VARIDX_MAX] = VARIDX_INIT_UNUSED;
+	ptrdiff_t aShape[DASIDX_MAX] = DASIDX_INIT_UNUSED;
 	return DasAry_shape(pAry, aShape);
 }
 
 int daswasm_ary_shapeAt(const DasAry* pAry, int i)
 {
-	ptrdiff_t aShape[VARIDX_MAX] = VARIDX_INIT_UNUSED;
+	ptrdiff_t aShape[DASIDX_MAX] = DASIDX_INIT_UNUSED;
 	int nRank = DasAry_shape(pAry, aShape);
 	if((i < 0)||(i >= nRank))
-		return VARIDX_UNUSED;
+		return DASIDX_UNUSED;
 	return (int)aShape[i];
 }
 
 int daswasm_ary_size(const DasAry* pAry){ return (int)DasAry_size(pAry); }
 
-const ubyte* daswasm_ary_data(DasAry* pAry)
+const uint8_t* daswasm_ary_data(DasAry* pAry)
 {
 	size_t uVals = 0;
-	return DasAry_getIn(pAry, DasAry_valType(pAry), DIM0, &uVals);
+	return DasAry_valsIn(pAry, DasAry_vt(pAry), DAS_ADDR0, &uVals);
 }
 
 const char* daswasm_ary_textAt(DasAry* pAry, int i)
 {
 	size_t uVals = 0;
-	if(DasAry_valType(pAry) != vtText)
+	if(DasAry_vt(pAry) != DASVT_TEXT)
 		return NULL;
-	char** pStrs = (char**)DasAry_getIn(pAry, vtText, DIM0, &uVals);
+	char** pStrs = (char**)DasAry_valsIn(pAry, DASVT_TEXT, DAS_ADDR0, &uVals);
 	if((pStrs == NULL)||(i < 0)||((size_t)i >= uVals))
 		return NULL;
 	return pStrs[i];
@@ -386,8 +413,8 @@ const char* daswasm_ary_textAt(DasAry* pAry, int i)
  * a fixed local, bounded by the maximum array rank das2C supports. */
 static int _daswasm_loc(const DasAry* pAry, const int* pLoc, int nLoc, ptrdiff_t* aLoc)
 {
-	if((nLoc < 0)||(nLoc > ARYIDX_MAX)||(nLoc > DasAry_rank(pAry))){
-		das_error(DASERR_ARRAY, "Partial index of length %d out of range for rank %d array",
+	if((nLoc < 0)||(nLoc > DASIDX_MAX)||(nLoc > DasAry_rank(pAry))){
+		daserrf(DASERR_ARRAY, "Partial index of length %d out of range for rank %d array",
 		          nLoc, DasAry_rank(pAry));
 		return -1;
 	}
@@ -398,7 +425,7 @@ static int _daswasm_loc(const DasAry* pAry, const int* pLoc, int nLoc, ptrdiff_t
 
 int daswasm_ary_lengthAt(const DasAry* pAry, const int* pLoc, int nLoc)
 {
-	ptrdiff_t aLoc[ARYIDX_MAX];
+	ptrdiff_t aLoc[DASIDX_MAX];
 	if(_daswasm_loc(pAry, pLoc, nLoc, aLoc) < 0)
 		return -1;
 	/* a complete index has nothing below it */
@@ -409,30 +436,30 @@ int daswasm_ary_lengthAt(const DasAry* pAry, const int* pLoc, int nLoc)
 
 int daswasm_ary_sizeAt(DasAry* pAry, const int* pLoc, int nLoc)
 {
-	ptrdiff_t aLoc[ARYIDX_MAX];
+	ptrdiff_t aLoc[DASIDX_MAX];
 	size_t uVals = 0;
 	if(_daswasm_loc(pAry, pLoc, nLoc, aLoc) < 0)
 		return -1;
-	if(DasAry_getIn(pAry, DasAry_valType(pAry), nLoc, aLoc, &uVals) == NULL)
+	if(DasAry_valsIn(pAry, DasAry_vt(pAry), nLoc, aLoc, &uVals) == NULL)
 		return 0;
 	return (int)uVals;
 }
 
-const ubyte* daswasm_ary_dataAt(DasAry* pAry, const int* pLoc, int nLoc)
+const uint8_t* daswasm_ary_dataAt(DasAry* pAry, const int* pLoc, int nLoc)
 {
-	ptrdiff_t aLoc[ARYIDX_MAX];
+	ptrdiff_t aLoc[DASIDX_MAX];
 	size_t uVals = 0;
 	if(_daswasm_loc(pAry, pLoc, nLoc, aLoc) < 0)
 		return NULL;
-	return DasAry_getIn(pAry, DasAry_valType(pAry), nLoc, aLoc, &uVals);
+	return DasAry_valsIn(pAry, DasAry_vt(pAry), nLoc, aLoc, &uVals);
 }
 
 double* daswasm_ary_times(DasAry* pAry)
 {
 	size_t uVals = 0;
-	if(DasAry_valType(pAry) != vtTime)
+	if(DasAry_vt(pAry) != DASVT_TIME)
 		return NULL;
-	const das_time* pTimes = DasAry_getTimesIn(pAry, DIM0, &uVals);
+	const DasTime* pTimes = DasAry_timesIn(pAry, DAS_ADDR0, &uVals);
 
 	/* An empty time array (header landed, no data yet) has no element
 	 * pointer, and malloc(0) may legally return NULL too.  Neither is a
@@ -444,11 +471,11 @@ double* daswasm_ary_times(DasAry* pAry)
 
 	double* pOut = (double*)malloc((uVals > 0 ? uVals : 1) * sizeof(double));
 	if(pOut == NULL){
-		das_error(DASERR_ARRAY, "Couldn't allocate %zu doubles", uVals);
+		daserrf(DASERR_ARRAY, "Couldn't allocate %zu doubles", uVals);
 		return NULL;
 	}
 	for(size_t u = 0; u < uVals; ++u)
-		pOut[u] = dt_ttime(pTimes + u);
+		pOut[u] = DasTime_toSec1958(pTimes + u);
 	return pOut;
 }
 
@@ -468,19 +495,19 @@ double* daswasm_ary_times(DasAry* pAry)
 		pOut[u] = (pIn[u] == fill) ? NAN : ((double)(DIFF)) * rScale; \
 }while(0)
 
-double* daswasm_ary_doubles(DasAry* pAry, const ubyte* pRef, double rScale)
+double* daswasm_ary_doubles(DasAry* pAry, const uint8_t* pRef, double rScale)
 {
-	das_val_type vt = DasAry_valType(pAry);
-	if((vt < vtUByte)||(vt > vtDouble)){
-		das_error(DASERR_ARRAY, "No double conversion for arrays of %s elements",
-		          das_vt_toStr(vt));
+	das_vt vt = DasAry_vt(pAry);
+	if((vt < DASVT_UBYTE)||(vt > DASVT_DOUBLE)){
+		daserrf(DASERR_ARRAY, "No double conversion for arrays of %s elements",
+		          dasvt_name(vt));
 		return NULL;
 	}
 
 	/* Same empty-array contract as daswasm_ary_times: a header with no
 	   records yet is not an error, answer with a real (if useless) buffer */
 	size_t uVals = 0;
-	const ubyte* pData = DasAry_getIn(pAry, vt, DIM0, &uVals);
+	const uint8_t* pData = DasAry_valsIn(pAry, vt, DAS_ADDR0, &uVals);
 	if((pData == NULL)&&(DasAry_size(pAry) != 0))
 		return NULL;
 	if(pData == NULL)
@@ -488,29 +515,29 @@ double* daswasm_ary_doubles(DasAry* pAry, const ubyte* pRef, double rScale)
 
 	double* pOut = (double*)malloc((uVals > 0 ? uVals : 1) * sizeof(double));
 	if(pOut == NULL){
-		das_error(DASERR_ARRAY, "Couldn't allocate %zu doubles", uVals);
+		daserrf(DASERR_ARRAY, "Couldn't allocate %zu doubles", uVals);
 		return NULL;
 	}
 	if(uVals == 0)
 		return pOut;
 
-	const ubyte* pFill = DasAry_getFill(pAry);
+	const uint8_t* pFill = DasAry_fill(pAry);
 
 	/* The two 64-bit cases subtract as uint64 and reinterpret: signed
 	   overflow is undefined in C, unsigned wrap is defined, and the wrapped
 	   bit pattern read as int64 is the right signed difference whenever
 	   that difference fits, which for a time axis it always does */
 	switch(vt){
-	case vtUByte:  _DASWASM_TO_DBL(uint8_t,  (int64_t)pIn[u] - (int64_t)ref); break;
-	case vtByte:   _DASWASM_TO_DBL(int8_t,   (int64_t)pIn[u] - (int64_t)ref); break;
-	case vtUShort: _DASWASM_TO_DBL(uint16_t, (int64_t)pIn[u] - (int64_t)ref); break;
-	case vtShort:  _DASWASM_TO_DBL(int16_t,  (int64_t)pIn[u] - (int64_t)ref); break;
-	case vtUInt:   _DASWASM_TO_DBL(uint32_t, (int64_t)pIn[u] - (int64_t)ref); break;
-	case vtInt:    _DASWASM_TO_DBL(int32_t,  (int64_t)pIn[u] - (int64_t)ref); break;
-	case vtULong:  _DASWASM_TO_DBL(uint64_t, (int64_t)(pIn[u] - ref)); break;
-	case vtLong:   _DASWASM_TO_DBL(int64_t,  (int64_t)((uint64_t)pIn[u] - (uint64_t)ref)); break;
-	case vtFloat:  _DASWASM_TO_DBL(float,    (double)pIn[u] - (double)ref); break;
-	case vtDouble: _DASWASM_TO_DBL(double,   pIn[u] - ref); break;
+	case DASVT_UBYTE:  _DASWASM_TO_DBL(uint8_t,  (int64_t)pIn[u] - (int64_t)ref); break;
+	case DASVT_BYTE:   _DASWASM_TO_DBL(int8_t,   (int64_t)pIn[u] - (int64_t)ref); break;
+	case DASVT_USHORT: _DASWASM_TO_DBL(uint16_t, (int64_t)pIn[u] - (int64_t)ref); break;
+	case DASVT_SHORT:  _DASWASM_TO_DBL(int16_t,  (int64_t)pIn[u] - (int64_t)ref); break;
+	case DASVT_UINT:   _DASWASM_TO_DBL(uint32_t, (int64_t)pIn[u] - (int64_t)ref); break;
+	case DASVT_INT:    _DASWASM_TO_DBL(int32_t,  (int64_t)pIn[u] - (int64_t)ref); break;
+	case DASVT_ULONG:  _DASWASM_TO_DBL(uint64_t, (int64_t)(pIn[u] - ref)); break;
+	case DASVT_LONG:   _DASWASM_TO_DBL(int64_t,  (int64_t)((uint64_t)pIn[u] - (uint64_t)ref)); break;
+	case DASVT_FLOAT:  _DASWASM_TO_DBL(float,    (double)pIn[u] - (double)ref); break;
+	case DASVT_DOUBLE: _DASWASM_TO_DBL(double,   pIn[u] - ref); break;
 	default: break;  /* excluded above */
 	}
 	return pOut;
@@ -557,7 +584,7 @@ static int _jb_reserve(JBuf* b, size_t uMore)
 	while(uCap < b->len + uMore + 1) uCap *= 2;
 	char* sNew = (char*)realloc(b->s, uCap);
 	if(sNew == NULL){
-		b->err = das_error(DASERR_DS, "Couldn't allocate %zu bytes for a snapshot", uCap);
+		b->err = daserrf(DASERR_DS, "Couldn't allocate %zu bytes for a snapshot", uCap);
 		return 0;
 	}
 	b->s = sNew;
@@ -673,20 +700,20 @@ static void _jb_shape(JBuf* b, const ptrdiff_t* pShape, int nRank)
 	_jb_raw(b, "]");
 }
 
-/* The schema's storage token for an element type.  das_vt_toStr already
+/* The schema's storage token for an element type.  dasvt_name already
    says "das_time"; the two pointer spellings never describe elements, a
    byte run's elements are ubytes. */
-static const char* _storage_tok(das_val_type vt)
+static const char* _storage_tok(das_vt vt)
 {
-	if((vt == vtText)||(vt == vtByteSeq)) return "ubyte";
-	const char* s = das_vt_toStr(vt);
+	if((vt == DASVT_TEXT)||(vt == DASVT_BYTESEQ)) return "ubyte";
+	const char* s = dasvt_name(vt);
 	return (s != NULL) ? s : "";
 }
 
 /* One typed value: {storage, units, value}.  The JS type of value follows
    storage: integers up to 32 bits and reals are JSON numbers, 64-bit
-   integers are strings (see _jb_int64str), a das_time is ISO 8601. */
-static void _jb_datum(JBuf* b, const ubyte* pVal, das_val_type vt, das_units units)
+   integers are strings (see _jb_int64str), a DasTime is ISO 8601. */
+static void _jb_datum(JBuf* b, const uint8_t* pVal, das_vt vt, DasUnits units)
 {
 	char sTmp[48];
 	_jb_open(b, "{");
@@ -695,21 +722,21 @@ static void _jb_datum(JBuf* b, const ubyte* pVal, das_val_type vt, das_units uni
 	_jb_key(b, "value");
 	if(pVal == NULL){ _jb_null(b); }
 	else switch(vt){
-	case vtUByte:  _jb_int(b, *((const uint8_t*)pVal));  break;
-	case vtByte:   _jb_int(b, *((const int8_t*)pVal));   break;
-	case vtUShort: _jb_int(b, *((const uint16_t*)pVal)); break;
-	case vtShort:  _jb_int(b, *((const int16_t*)pVal));  break;
-	case vtUInt:   _jb_int(b, *((const uint32_t*)pVal)); break;
-	case vtInt:    _jb_int(b, *((const int32_t*)pVal));  break;
-	case vtULong:  _jb_uint64str(b, *((const uint64_t*)pVal)); break;
-	case vtLong:   _jb_int64str(b, *((const int64_t*)pVal));   break;
-	case vtFloat:  _jb_real(b, *((const float*)pVal));   break;
-	case vtDouble: _jb_real(b, *((const double*)pVal));  break;
-	case vtTime:
-		dt_isoc((const das_time*)pVal, sTmp, sizeof(sTmp), 9);
+	case DASVT_UBYTE:  _jb_int(b, *((const uint8_t*)pVal));  break;
+	case DASVT_BYTE:   _jb_int(b, *((const int8_t*)pVal));   break;
+	case DASVT_USHORT: _jb_int(b, *((const uint16_t*)pVal)); break;
+	case DASVT_SHORT:  _jb_int(b, *((const int16_t*)pVal));  break;
+	case DASVT_UINT:   _jb_int(b, *((const uint32_t*)pVal)); break;
+	case DASVT_INT:    _jb_int(b, *((const int32_t*)pVal));  break;
+	case DASVT_ULONG:  _jb_uint64str(b, *((const uint64_t*)pVal)); break;
+	case DASVT_LONG:   _jb_int64str(b, *((const int64_t*)pVal));   break;
+	case DASVT_FLOAT:  _jb_real(b, *((const float*)pVal));   break;
+	case DASVT_DOUBLE: _jb_real(b, *((const double*)pVal));  break;
+	case DASVT_TIME:
+		DasTime_toIsoC((const DasTime*)pVal, 9, sTmp, sizeof(sTmp));
 		_jb_str(b, sTmp);
 		break;
-	case vtText:   _jb_str(b, (const char*)pVal); break;
+	case DASVT_TEXT:   _jb_str(b, (const char*)pVal); break;
 	default:       _jb_null(b); break;
 	}
 	_jb_raw(b, "}");
@@ -723,14 +750,14 @@ static void _jb_datum(JBuf* b, const ubyte* pVal, das_val_type vt, das_units uni
 static void _jb_props(JBuf* b, const DasDesc* pDesc)
 {
 	_jb_open(b, "{");
-	size_t uProps = DasDesc_length(pDesc);
+	size_t uProps = DasDesc_numProps(pDesc);
 	for(size_t u = 0; u < uProps; ++u){
-		const DasProp* pProp = DasDesc_getPropByIdx(pDesc, u);
+		const DasProp* pProp = DasDesc_propAt(pDesc, u);
 		if((pProp == NULL)||(!DasProp_isValid(pProp))) continue;
 
-		ubyte uType = DasProp_type(pProp);
-		ubyte uBase = uType & DASPROP_TYPE_MASK;
-		ubyte uMulti = uType & DASPROP_MULTI_MASK;
+		uint8_t uType = DasProp_type(pProp);
+		uint8_t uBase = uType & DASPROP_TYPE_MASK;
+		uint8_t uMulti = uType & DASPROP_MULTI_MASK;
 
 		/* A single value is used whole, straight from the property, no copy.
 		   Sets and ranges go through the item splitter; each item can be as
@@ -741,18 +768,18 @@ static void _jb_props(JBuf* b, const DasDesc* pDesc)
 		char** psItems = NULL;
 		const char* const* psVals = &sWhole;
 		if(uMulti != DASPROP_SINGLE){
-			nItems = DasProp_items(pProp);
+			nItems = DasProp_numItems(pProp);
 			if(nItems < 0) nItems = 0;
 			size_t uLenEa = strlen(sWhole) + 1;
 			pStore = (char*)calloc((size_t)(nItems > 0 ? nItems : 1), uLenEa);
 			psItems = (char**)calloc((size_t)(nItems > 0 ? nItems : 1), sizeof(char*));
 			if((pStore == NULL)||(psItems == NULL)){
 				free(pStore); free(psItems);
-				b->err = das_error(DASERR_DS, "Couldn't allocate property item buffers");
+				b->err = daserrf(DASERR_DS, "Couldn't allocate property item buffers");
 				return;
 			}
 			for(int i = 0; i < nItems; ++i) psItems[i] = pStore + (size_t)i * uLenEa;
-			int nGot = (nItems > 0) ? DasProp_extractItems(pProp, psItems, (size_t)nItems, uLenEa) : 0;
+			int nGot = (nItems > 0) ? DasProp_toStrs(pProp, psItems, (size_t)nItems, uLenEa) : 0;
 			if(nGot < nItems) nItems = (nGot > 0) ? nGot : 0;
 			psVals = (const char* const*)psItems;
 		}
@@ -779,7 +806,7 @@ static void _jb_props(JBuf* b, const DasDesc* pDesc)
 			}
 		}
 		if(uMulti != DASPROP_SINGLE) _jb_raw(b, "]");
-		das_units units = DasProp_units(pProp);
+		DasUnits units = DasProp_units(pProp);
 		_jb_key(b, "units"); _jb_str(b, (units != NULL) ? (const char*)units : "");
 		_jb_key(b, "alt");   _jb_open(b, "{"); _jb_raw(b, "}");
 		_jb_raw(b, "}");
@@ -801,8 +828,8 @@ static void _jb_props(JBuf* b, const DasDesc* pDesc)
 #define OPS_MAX_ITEMS 16
 static void _jb_opsParam(JBuf* b, const DasProp* pProp)
 {
-	ubyte uType  = DasProp_type(pProp);
-	ubyte uBase  = uType & DASPROP_TYPE_MASK;
+	uint8_t uType  = DasProp_type(pProp);
+	uint8_t uBase  = uType & DASPROP_TYPE_MASK;
 	bool  bMulti = ((uType & DASPROP_MULTI_MASK) != DASPROP_SINGLE);
 
 	_jb_key(b, DasProp_name(pProp));
@@ -811,7 +838,7 @@ static void _jb_opsParam(JBuf* b, const DasProp* pProp)
 	switch(uBase){
 	case DASPROP_INT: {
 		int64_t aVal[OPS_MAX_ITEMS];
-		n = DasProp_convertInt(pProp, aVal, OPS_MAX_ITEMS);
+		n = DasProp_toInts(pProp, aVal, OPS_MAX_ITEMS);
 		if(bMulti) _jb_open(b, "[");
 		for(int i = 0; i < n; ++i) _jb_int(b, (long long)aVal[i]);
 		if(bMulti) _jb_raw(b, "]");
@@ -819,7 +846,7 @@ static void _jb_opsParam(JBuf* b, const DasProp* pProp)
 	}
 	case DASPROP_REAL: {
 		double aVal[OPS_MAX_ITEMS];
-		n = DasProp_convertReal(pProp, aVal, OPS_MAX_ITEMS);
+		n = DasProp_toDoubles(pProp, aVal, OPS_MAX_ITEMS);
 		if(bMulti) _jb_open(b, "[");
 		for(int i = 0; i < n; ++i) _jb_real(b, aVal[i]);
 		if(bMulti) _jb_raw(b, "]");
@@ -827,7 +854,7 @@ static void _jb_opsParam(JBuf* b, const DasProp* pProp)
 	}
 	case DASPROP_BOOL: {
 		uint8_t aVal[OPS_MAX_ITEMS];
-		n = DasProp_convertBool(pProp, aVal, OPS_MAX_ITEMS);
+		n = DasProp_toBools(pProp, aVal, OPS_MAX_ITEMS);
 		if(bMulti) _jb_open(b, "[");
 		for(int i = 0; i < n; ++i) _jb_bool(b, aVal[i]);
 		if(bMulti) _jb_raw(b, "]");
@@ -841,7 +868,7 @@ static void _jb_opsParam(JBuf* b, const DasProp* pProp)
 	}
 
 	/* A scalar that failed to convert left a key with no value, which would
-	   be invalid JSON.  das_error has already said why. */
+	   be invalid JSON.  daserrf has already said why. */
 	if((n < 1)&&(!bMulti)) _jb_null(b);
 }
 
@@ -852,7 +879,7 @@ static void _jb_ops(JBuf* b, const DasForm* pForm)
 	_jb_open(b, "{");
 	_jb_key(b, "kind"); _jb_str(b, DasForm_kind(pForm));
 
-	das_form_param_buf buf;
+	DasFormParamBuf buf;
 	const DasProp* pProp = NULL;
 	for(int i = 0; (pProp = DasForm_paramAt(pForm, i, &buf)) != NULL; ++i)
 		_jb_opsParam(b, pProp);
@@ -861,7 +888,7 @@ static void _jb_ops(JBuf* b, const DasForm* pForm)
 }
 
 /* {kind} plus, for a sequence, the intercept and slopes as typed values.
-   A das_time sequence keeps its slopes as doubles in seconds (das2C's
+   A DasTime sequence keeps its slopes as doubles in seconds (das2C's
    affine rule), so their storage and units differ from the intercept's. */
 static void _jb_source(JBuf* b, const DasVar* pVar, const ptrdiff_t* pShape, int nRank)
 {
@@ -874,12 +901,13 @@ static void _jb_source(JBuf* b, const DasVar* pVar, const ptrdiff_t* pShape, int
 	   way).  Say what was combined, by role, so a caller can find the
 	   operands in the same dimension. */
 	if(pGen == NULL){
-		const DasVarBin* pBin = (const DasVarBin*)pVar;
-		const char* sOp = das_op_toStr(pBin->op, NULL);
+		const char* sOp = dasop_name(DasVarBin_op(pVar), NULL);
+		const DasVar* pLeft = DasVarBin_left(pVar);
+		const DasVar* pRight = DasVarBin_right(pVar);
 		_jb_str(b, "binaryOp");
 		_jb_key(b, "op");    _jb_str(b, (sOp != NULL) ? sOp : "");
-		_jb_key(b, "left");  _jb_str(b, (pBin->pLeft != NULL) ? DasVar_role(pBin->pLeft) : "");
-		_jb_key(b, "right"); _jb_str(b, (pBin->pRight != NULL) ? DasVar_role(pBin->pRight) : "");
+		_jb_key(b, "left");  _jb_str(b, (pLeft != NULL) ? DasVar_role(pLeft) : "");
+		_jb_key(b, "right"); _jb_str(b, (pRight != NULL) ? DasVar_role(pRight) : "");
 		_jb_raw(b, "}");
 		return;
 	}
@@ -895,10 +923,10 @@ static void _jb_source(JBuf* b, const DasVar* pVar, const ptrdiff_t* pShape, int
 
 	if(DasGen_type(pGen) == gtSeq){
 		const DasGenSeq* pSeq = (const DasGenSeq*)pGen;
-		das_val_type vt = (das_val_type)DasGen_elemType(pGen);
-		das_units units = DasVar_units(pVar);
-		das_val_type vtSlope = (vt == vtTime) ? vtDouble : vt;
-		das_units uSlope = (vt == vtTime) ? UNIT_SECONDS : units;
+		das_vt vt = (das_vt)DasGen_elemType(pGen);
+		DasUnits units = DasVar_units(pVar);
+		das_vt vtSlope = (vt == DASVT_TIME) ? DASVT_DOUBLE : vt;
+		DasUnits uSlope = (vt == DASVT_TIME) ? DASUNITS_SECONDS : units;
 		int nComps = (pSeq->nComps > 0) ? pSeq->nComps : 1;
 
 		_jb_key(b, "minval");
@@ -913,7 +941,7 @@ static void _jb_source(JBuf* b, const DasVar* pVar, const ptrdiff_t* pShape, int
 		for(int c = 0; c < nComps; ++c){
 			_jb_open(b, "[");
 			for(int i = 0; i < nRank; ++i){
-				if(pShape[i] == VARIDX_UNUSED) _jb_null(b);
+				if(pShape[i] == DASIDX_UNUSED) _jb_null(b);
 				else _jb_datum(b, DasGenSeq_interval(pSeq, c, i), vtSlope, uSlope);
 			}
 			_jb_raw(b, "]");
@@ -925,14 +953,14 @@ static void _jb_source(JBuf* b, const DasVar* pVar, const ptrdiff_t* pShape, int
 
 static void _jb_var(JBuf* b, DasVar* pVar, int nDsRank)
 {
-	das_val_type vt = DasVar_valType(pVar);
-	das_val_type et = (das_val_type)DasVar_elemType(pVar);
-	das_units units = DasVar_units(pVar);
-	bool bBytes = (vt == vtText)||(vt == vtByteSeq);
+	das_vt vt = DasVar_vt(pVar);
+	das_vt et = (das_vt)DasVar_et(pVar);
+	DasUnits units = DasVar_units(pVar);
+	bool bBytes = (vt == DASVT_TEXT)||(vt == DASVT_BYTESEQ);
 
-	ptrdiff_t aShape[VARIDX_MAX] = VARIDX_INIT_UNUSED;
+	ptrdiff_t aShape[DASIDX_MAX] = DASIDX_INIT_UNUSED;
 	DasVar_shape(pVar, aShape);
-	ptrdiff_t aInner[VARIDX_MAX] = {0};
+	ptrdiff_t aInner[DASIDX_MAX] = {0};
 	int nInner = DasVar_intrShape(pVar, aInner);
 	if(nInner < 0) nInner = 0;
 
@@ -944,10 +972,10 @@ static void _jb_var(JBuf* b, DasVar* pVar, int nDsRank)
 	/* semantic is derived the way the das3 writer derives it: spent at parse
 	   time, re-stated for the reader.  A byte run's meaning is its class. */
 	_jb_key(b, "semantic");
-	if(vt == vtText) _jb_str(b, "string");
-	else if(vt == vtByteSeq) _jb_str(b, "blob");
+	if(vt == DASVT_TEXT) _jb_str(b, "string");
+	else if(vt == DASVT_BYTESEQ) _jb_str(b, "blob");
 	else{
-		const char* sSem = das_sem_default(et, units);
+		const char* sSem = dassem_default(et, units);
 		_jb_str(b, (sSem != NULL) ? sSem : "");
 	}
 	_jb_key(b, "storage");  _jb_str(b, _storage_tok(bBytes ? vt : et));
@@ -981,11 +1009,11 @@ static void _jb_dim(JBuf* b, DasDim* pDim, int nDsRank)
 {
 	_jb_open(b, "{");
 	_jb_key(b, "ptr");     _jb_int(b, (long long)(uintptr_t)pDim);
-	_jb_key(b, "name");    _jb_str(b, DasDim_id(pDim));
-	_jb_key(b, "physDim"); _jb_str(b, DasDim_dim(pDim));
+	_jb_key(b, "name");    _jb_str(b, DasDim_name(pDim));
+	_jb_key(b, "physDim"); _jb_str(b, DasDim_physDim(pDim));
 	_jb_key(b, "axes");    _jb_open(b, "[");
 	for(int i = 0; i < DASDIM_NAXES; ++i){
-		const char* sAxis = DasDim_getAxis(pDim, i);
+		const char* sAxis = DasDim_axisSymAt(pDim, i);
 		if(sAxis == NULL) break;
 		_jb_str(b, sAxis);
 	}
@@ -995,38 +1023,38 @@ static void _jb_dim(JBuf* b, DasDim* pDim, int nDsRank)
 	_jb_key(b, "vars");    _jb_open(b, "{");
 	size_t uVars = DasDim_numVars(pDim);
 	for(size_t u = 0; u < uVars; ++u){
-		_jb_key(b, DasDim_getRoleByIdx(pDim, u));
-		_jb_var(b, DasDim_getVarByIdx(pDim, u), nDsRank);
+		_jb_key(b, DasDim_roleAt(pDim, u));
+		_jb_var(b, DasDim_varAt(pDim, u), nDsRank);
 	}
 	_jb_raw(b, "}");
 	_jb_raw(b, "}");
 }
 
-static void _jb_dims(JBuf* b, DasDs* pDs, enum dim_type dt, int nDsRank)
+static void _jb_dims(JBuf* b, DasDs* pDs, das_dimtype dt, int nDsRank)
 {
 	_jb_open(b, "[");
 	size_t uDims = DasDs_numDims(pDs, dt);
 	for(size_t u = 0; u < uDims; ++u)
-		_jb_dim(b, DasDs_getDimByIdx(pDs, u, dt), nDsRank);
+		_jb_dim(b, DasDs_dimAt(pDs, u, dt), nDsRank);
 	_jb_raw(b, "]");
 }
 
 char* daswasm_ds_json(DasDs* pDs)
 {
 	JBuf b = {NULL, 0, 0, 0};
-	ptrdiff_t aShape[VARIDX_MAX] = VARIDX_INIT_UNUSED;
+	ptrdiff_t aShape[DASIDX_MAX] = DASIDX_INIT_UNUSED;
 	int nRank = DasDs_shape(pDs, aShape);
 	const char* sGroup = DasDs_group(pDs);
 
 	_jb_open(&b, "{");
 	_jb_key(&b, "ptr");    _jb_int(&b, (long long)(uintptr_t)pDs);
-	_jb_key(&b, "name");   _jb_str(&b, DasDs_id(pDs));
+	_jb_key(&b, "name");   _jb_str(&b, DasDs_name(pDs));
 	_jb_key(&b, "group");  _jb_str(&b, (sGroup != NULL) ? sGroup : "");
 	_jb_key(&b, "rank");   _jb_int(&b, nRank);
 	_jb_key(&b, "shape");  _jb_shape(&b, aShape, nRank);
 	_jb_key(&b, "props");  _jb_props(&b, (const DasDesc*)pDs);
-	_jb_key(&b, "coords"); _jb_dims(&b, pDs, DASDIM_COORD, nRank);
-	_jb_key(&b, "data");   _jb_dims(&b, pDs, DASDIM_DATA, nRank);
+	_jb_key(&b, "coords"); _jb_dims(&b, pDs, DASDIMTYPE_COORD, nRank);
+	_jb_key(&b, "data");   _jb_dims(&b, pDs, DASDIMTYPE_DATA, nRank);
 	_jb_raw(&b, "}");
 
 	if(b.err){ free(b.s); return NULL; }
@@ -1044,16 +1072,16 @@ char* daswasm_desc_json(const DasDesc* pDesc)
 /* ************************************************************************* */
 /* Catalog node snapshot */
 
-static const char* _node_kind_tok(das_node_type_e nt)
+static const char* _node_kind_tok(das_nodetype nt)
 {
 	switch(nt){
-	case d2node_catalog:    return "catalog";
-	case d2node_collection: return "collection";
-	case d2node_srcset:     return "srcset";
-	case d2node_stream_src: return "stream_src";
-	case d2node_file_agg:   return "file_agg";
-	case d2node_spdf_cat:   return "spdf_cat";
-	case d2node_spase_cat:  return "spase_cat";
+	case DASNODETYPE_CATALOG:    return "catalog";
+	case DASNODETYPE_COLLECTION: return "collection";
+	case DASNODETYPE_SRCSET:     return "srcset";
+	case DASNODETYPE_STREAM_SRC: return "stream_src";
+	case DASNODETYPE_FILE_AGG:   return "file_agg";
+	case DASNODETYPE_SPDF_CAT:   return "spdf_cat";
+	case DASNODETYPE_SPASE_CAT:  return "spase_cat";
 	default:                return "inv";
 	}
 }
@@ -1072,7 +1100,7 @@ static void _jb_strOrNull(JBuf* b, const char* s)
 static void _jb_stub(JBuf* b, const DasJdo* pStub)
 {
 	size_t uLen = 0;
-	char* sStub = (pStub == NULL) ? NULL : (char*)DasJdo_writeMinified(pStub, &uLen);
+	char* sStub = (pStub == NULL) ? NULL : (char*)DasJdo_newMiniStr(pStub, &uLen);
 	if(sStub == NULL){ _jb_null(b); return; }
 	_jb_item(b);
 	_jb_raw(b, sStub);
@@ -1084,12 +1112,12 @@ char* daswasm_node_json(const DasNode* pNode)
 	if(pNode == NULL) return NULL;
 	JBuf b = {NULL, 0, 0, 0};
 
-	const DasJdo* pType = DasNode_getJdo(pNode, D2FRAG_TYPE);
+	const DasJdo* pType = DasNode_jdo(pNode, DASNODE_FRAG_TYPE);
 
 	_jb_open(&b, "{");
 	_jb_key(&b, "ptr");         _jb_int(&b, (long long)(uintptr_t)pNode);
 	_jb_key(&b, "kind");        _jb_str(&b, _node_kind_tok(DasNode_type(pNode)));
-	_jb_key(&b, "type");        _jb_strOrNull(&b, pType ? DasJdo_string(pType) : NULL);
+	_jb_key(&b, "type");        _jb_strOrNull(&b, pType ? DasJdo_str(pType) : NULL);
 	_jb_key(&b, "version");     _jb_strOrNull(&b, DasNode_version(pNode));
 	_jb_key(&b, "name");        _jb_strOrNull(&b, DasNode_name(pNode));
 	_jb_key(&b, "label");       _jb_strOrNull(&b, DasNode_label(pNode));
@@ -1101,12 +1129,12 @@ char* daswasm_node_json(const DasNode* pNode)
 
 	_jb_key(&b, "children");
 	_jb_open(&b, "[");
-	size_t uKids = DasNode_subCount(pNode);
+	size_t uKids = DasNode_numSubs(pNode);
 	for(size_t u = 0; u < uKids; ++u){
 		_jb_open(&b, "{");
-		_jb_key(&b, "name"); _jb_str(&b, DasNode_subName(pNode, u));
-		_jb_key(&b, "kind"); _jb_str(&b, _node_kind_tok(DasNode_subType(pNode, u)));
-		_jb_key(&b, "stub"); _jb_stub(&b, DasNode_subStub(pNode, u));
+		_jb_key(&b, "name"); _jb_str(&b, DasNode_subNameAt(pNode, u));
+		_jb_key(&b, "kind"); _jb_str(&b, _node_kind_tok(DasNode_subTypeAt(pNode, u)));
+		_jb_key(&b, "stub"); _jb_stub(&b, DasNode_subStubAt(pNode, u));
 		_jb_raw(&b, "}");
 	}
 	_jb_raw(&b, "]");
@@ -1115,14 +1143,14 @@ char* daswasm_node_json(const DasNode* pNode)
 	   allocated here */
 	_jb_key(&b, "loadable");
 	_jb_open(&b, "[");
-	size_t uLoad = dassrc_loadable(pNode, NULL, 0);
+	size_t uLoad = DasSrc_loadable(pNode, NULL, 0);
 	if(uLoad > 0){
 		const char** aNames = (const char**)calloc(uLoad, sizeof(const char*));
 		if(aNames == NULL){
-			b.err = das_error(DASERR_DS, "Couldn't allocate a loadable list");
+			b.err = daserrf(DASERR_DS, "Couldn't allocate a loadable list");
 		}
 		else{
-			dassrc_loadable(pNode, aNames, uLoad);
+			DasSrc_loadable(pNode, aNames, uLoad);
 			for(size_t u = 0; u < uLoad; ++u) _jb_str(&b, aNames[u]);
 			free(aNames);
 		}
