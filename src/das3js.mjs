@@ -134,6 +134,7 @@ export class DasRuntime {
 		this.#c = {
 			init:          w('daswasm_init', null, [S]),
 			lastError:     w('daswasm_lastError', S, []),
+			timeIsoC:      w('daswasm_timeIsoC', S, [S, N]),
 			idxRagged:     w('daswasm_idxRagged', N, []),
 			idxUnused:     w('daswasm_idxUnused', N, []),
 			idxBorrow:     w('daswasm_idxBorrow', N, []),
@@ -294,6 +295,17 @@ export class DasRuntime {
 
 	/** The most recent das2C error message, or '' */
 	lastError(){ return this.#c.lastError(); }
+
+	/** A time as das2C reads it, in ISO-C: '2026-015T12' gives
+	 * '2026-01-15T12:00:00'.  All times are UTC, so there is no zone
+	 * suffix.  '' when das2C can't read the text.
+	 *
+	 * @param {string} text Any form das2C parses: ISO-C, ISO-D (day of
+	 *        year), or a truncated form such as '2026-01-15T12'
+	 * @param {number} [frac=0] Digits of fractional seconds, 0 to 9
+	 * @returns {string}
+	 */
+	isoTime(text, frac = 0){ return this.#c.timeIsoC(String(text), frac); }
 
 	/** A push-mode stream reader, for feeding bytes you obtained yourself */
 	newReader(){ return new DasReader(this); }
@@ -1774,6 +1786,9 @@ export class DasCatSource {
 	}
 
 	get title(){ return cString(this.#d._m(), this.#d._c().srcTitle(this.#p)); }
+
+	/** The DasRuntime this source belongs to */
+	get runtime(){ return this.#d; }
 
 	/** True if the catalog marks the source as protected.  Servers may
 	 * still answer some requests without a login, by time range for

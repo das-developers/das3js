@@ -10,15 +10,18 @@
 	},
 	"exports": {
 		".": "./build.wasm32/das3js.mjs",
-		"./catalog-tree": "./build.wasm32/das-catalog-tree.mjs"
+		"./catalog-tree": "./build.wasm32/das-catalog-tree.mjs",
+		"./source-form": "./build.wasm32/das-source-form.mjs"
 	},
 	"files": [
 		"build.wasm32/das3js.mjs",
 		"build.wasm32/das2c.mjs",
 		"build.wasm32/das2c.wasm",
-		"build.wasm32/das-catalog-tree.mjs"
+		"build.wasm32/das-catalog-tree.mjs",
+		"build.wasm32/das-source-form.mjs"
 	],
 	"sideEffects": [
-		"./build.wasm32/das-catalog-tree.mjs"
+		"./build.wasm32/das-catalog-tree.mjs",
+		"./build.wasm32/das-source-form.mjs"
 	]
 }

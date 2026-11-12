@@ -102,6 +102,18 @@ DAS_WASM_API const char* daswasm_lastError(void);
 /** Forget the saved error text, see daswasm_lastError(). */
 DAS_WASM_API void daswasm_clearError(void);
 
+/** A time as das2C reads it, written out in ISO-C (2026-01-15T12:00:00),
+ * the way a form echoes what it understood.  Accepts whatever das2C's time
+ * parser does: ISO-C, ISO-D (2026-015T12:00), truncated forms
+ * ("2026-01-15T12").  UTC throughout, so no zone suffix is written.
+ *
+ * @param sTime The text to read
+ * @param nFrac Digits of fractional seconds to write, 0 to 9
+ * @returns the time, or "" if das2C can't read the text.  Borrowed: the
+ *          next call overwrites it.
+ */
+DAS_WASM_API const char* daswasm_timeIsoC(const char* sTime, int nFrac);
+
 /** The shape sentinel meaning an index is ragged (varies with prior
  * indices).  Appears in daswasm_ds_shapeAt, daswasm_var_shapeAt and
  * daswasm_ary_shapeAt results.  All sentinels are negative; any value

@@ -40,6 +40,18 @@
 		--das-tree-line: var(--line);
 	}
 
+	/* Likewise for the request form, see src/das-source-form.mjs */
+	das-source-form {
+		--das-form-muted: var(--muted);
+		--das-form-error: var(--err);
+		--das-form-line: var(--line);
+		--das-form-accent: var(--gold);
+	}
+	#info .muted { color: var(--muted); }
+	#info .uri { color: var(--muted); font-size: 0.85em; margin: -0.2em 0 0.6em; overflow-wrap: anywhere; }
+	#info dl.foot { font-size: 0.85em; color: var(--muted); margin-top: 1.2em; }
+	#info .placeholder { color: var(--muted); opacity: 0.7; text-align: center; margin-top: 3em; }
+
 	#info h3 { margin: 0.2em 0 0.4em; font-size: 1.15em; color: var(--text); }
 	#info dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2em 0.8em; margin: 0.6em 0; }
 	#info dt { color: var(--muted); }
@@ -54,11 +66,12 @@
 <main>
 <h1>Catalog browser</h1>
 <p>Walk the das federated catalog.  Each level is fetched when it is opened;
-das2C picks the child, falls back to the next mirror, and builds request
-URLs for data sources.  A blank seed starts at das2C's compiled in root
-and opens <code>site:/uiowa</code>.  A Collection or SourceSet is shown as
-the one source das2C can use in it; the rare one holding several opens as
-a folder when clicked.</p>
+das2C picks the child and falls back to the next mirror.  Pick a data
+source to get a request form drawn from its definition; das2C checks each
+entry and builds the request.  A blank seed starts at das2C's compiled in
+root and opens <code>site:/uiowa</code>.  A Collection or SourceSet is
+shown as the one source das2C can use in it; the rare one holding several
+opens as a folder when clicked.</p>
 <form id="form">
 	<input type="text" id="seed" placeholder="seed node URL, blank for the compiled in root">
 	<label><input type="checkbox" id="flat"> no collapse</label>

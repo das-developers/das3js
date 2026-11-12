@@ -76,6 +76,17 @@ const char* daswasm_lastError(void){ return g_sLastErr; }
 
 void daswasm_clearError(void){ g_sLastErr[0] = '\0'; }
 
+/* Static result, see daswasm_lastError for why that's fine here */
+const char* daswasm_timeIsoC(const char* sTime, int nFrac)
+{
+	static char sBuf[64];
+	DasTime dt;
+	sBuf[0] = '\0';
+	if((sTime != NULL) && DasTime_fromStr(&dt, sTime))
+		DasTime_toIsoC(&dt, nFrac, sBuf, sizeof(sBuf));
+	return sBuf;
+}
+
 int daswasm_idxRagged(void){ return DASIDX_RAGGED; }
 
 int daswasm_idxUnused(void){ return DASIDX_UNUSED; }

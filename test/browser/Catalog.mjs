@@ -1,9 +1,10 @@
 /* The catalog browser: <das-catalog-tree> on the left, and a details pane
- * that turns a data source's worked examples into request URLs.
+ * that shows a data source's request form, <das-source-form>.
  *
- * The tree is the shippable part, src/das-catalog-tree.mjs.  This file is
- * what an application would write around it: make a catalog, hand it to
- * the element, listen for its events.
+ * The two elements are the shippable parts, src/das-catalog-tree.mjs and
+ * src/das-source-form.mjs.  This file is what an application would write
+ * around them: make a catalog, hand it to the tree, hand the selected
+ * source to the form, and act on the requests the form builds.
  *
  * Query parameters, so a view can be bookmarked:
  *
@@ -17,6 +18,7 @@
 
 import {load, DasError} from '../build/das3js.mjs';
 import '../build/das-catalog-tree.mjs';     /* defines <das-catalog-tree> */
+import '../build/das-source-form.mjs';      /* defines <das-source-form> */
 
 const tree = document.getElementById('tree');
 const info = document.getElementById('info');
@@ -90,22 +92,36 @@ function freeSource()
 	if(src){ src.free(); src = null; }
 }
 
+/* What the pane says when no source is selected */
+function placeholder()
+{
+	info.replaceChildren(el('p', {className: 'placeholder'}, 'Select a stream source'));
+}
+
+/* Only data sources fill the pane.  Containers leave the placeholder: the
+ * tree already says what is in them. */
 function showNode(node)
 {
 	freeSource();
-	const dl = el('dl');
-	field(dl, 'node type', `${node.type} ${node.version || ''}`.trim());
-	field(dl, 'uri', node.uri ?? '(a root, no uri)');
-	field(dl, 'loaded from', link(node.url));
-	if(node.isContainer) field(dl, 'children', String(node.children.length));
-	field(dl, 'about', node.description);
+	placeholder();
+	if(!node.isSource) return;
+	info.replaceChildren();
 
-	info.replaceChildren(el('h3', {}, node.title || node.label || node.name || '(untitled)'), dl);
-	if(node.isSource) showSource(node);
+	info.append(el('h3', {}, node.title || node.label || node.name || '(untitled)'));
+	if(node.uri) info.append(el('p', {className: 'uri'}, node.uri));
+	if(node.description) info.append(el('p', {}, node.description));
+	showSource(node);
+
+	/* Where it came from, for the curious, out of the way */
+	const dl = el('dl', {className: 'foot'});
+	field(dl, 'node type', `${node.type} ${node.version || ''}`.trim());
+	field(dl, 'loaded from', link(node.url));
+	info.append(dl);
 }
 
-/* A data source: pick a worked example, optionally a time span, and see
- * the request URL das2C builds from them */
+/* A data source: a <das-source-form> drawn from its interface, and two
+ * actions on the request it builds.  The form only builds and checks
+ * requests; what happens to one is this page's business. */
 function showSource(node)
 {
 	try{ src = node.source(); }
@@ -116,46 +132,65 @@ function showSource(node)
 	if(src.needsAuth)
 		info.append(el('p', {}, el('span', {className: 'badge'},
 				'login may be required' + (src.authRealm ? ` (${src.authRealm})` : '')),
-			'  The catalog marks this source as protected; the server decides per'
-			+ ' request, often by time range.'));
+			'  The catalog marks this source as protected; the server decides per request.'));
 
-	const pick = el('select');
-	src.examples.forEach((lbl, i) => pick.append(el('option', {value: i}, lbl || `example ${i}`)));
-	if(src.examples.length === 0) pick.append(el('option', {value: -1}, '(no examples, blank request)'));
+	const form = el('das-source-form');
+	form.toggleAttribute('show-url', true);   /* a test page: show the URL */
+	/* Date pickers only where typing is awkward: a touch screen, no mouse */
+	form.toggleAttribute('pickers', matchMedia('(pointer: coarse)').matches);
 
-	const time = el('input', {type: 'text', placeholder: 'time, e.g. 2025-10-01T12', size: 26});
-	const out = el('pre');
-	let target = null;
-	const view = el('button', {type: 'button', onclick: () => window.open(target, '_blank', 'noopener')});
-	const viewP = el('p', {}, view);
+	/* The page's buttons replace the form's own, through its actions slot */
+	const view = el('button', {type: 'button', disabled: true}, 'View Structure');
+	const save = el('button', {type: 'button', disabled: true}, 'Download');
+	const note = el('span', {className: 'muted'});
+	const actions = el('span', {}, view, ' ', save, ' ', note);
+	actions.setAttribute('slot', 'actions');
+	form.append(actions);
 
-	/* Rebuild the URL whenever either control changes.  das2C reads
-	 * "time=2025-10-01T12" as that whole hour, see das3/source.h "Keys". */
-	function update()
-	{
-		const settings = time.value.trim() ? {time: time.value.trim()} : {};
-		try{
-			const req = src.request(Number(pick.value), settings);
-			out.className = '';
-			out.textContent = req.url + (req.mime ? `\n\n${req.mime}` : '');
-			/* No type given: older das2 nodes, whose output is a das2 stream */
-			const stream = !req.mime || STREAM_MIME.has(req.mime);
-			target = stream ? 'Inspect.html?url=' + encodeURIComponent(req.url) : req.url;
-			view.textContent = stream ? 'Fetch and View Structure' : 'Download';
-			viewP.hidden = false;
-		}
-		catch(e){
-			out.className = 'err';
-			out.textContent = e.message;
-			viewP.hidden = true;
-		}
-	}
-	pick.addEventListener('change', update);
-	time.addEventListener('input', update);
+	/* No type given: older das2 nodes, whose output is a das2 stream */
+	const isStream = mime => !mime || STREAM_MIME.has(mime);
+	form.addEventListener('das-change', ev => {
+		const {ok, mime} = ev.detail;
+		view.disabled = !(ok && isStream(mime));
+		save.disabled = !ok;
+	});
+	view.addEventListener('click', () => {
+		const res = form.submit();
+		if(res && res.ok)
+			window.open('Inspect.html?url=' + encodeURIComponent(res.url), '_blank', 'noopener');
+	});
+	save.addEventListener('click', async () => {
+		const res = form.submit();
+		if(!res || !res.ok) return;
+		note.textContent = 'downloading...';
+		try{ note.textContent = await download(res.url); }
+		catch(e){ note.textContent = `download failed: ${e.message}`; }
+	});
 
-	info.append(el('h3', {}, 'Examples'),
-		el('form', {onsubmit: ev => ev.preventDefault()}, pick, time), out, viewP);
-	update();
+	info.append(el('h3', {}, 'Request'), form);
+	form.source = src;
+}
+
+/* Fetch a URL into memory and hand it to the browser as a file to save.
+ * The name is the server's, from Content-Disposition, else the last part
+ * of the URL path.  Returns a line for the page to show. */
+async function download(url)
+{
+	const resp = await fetch(url);
+	if(!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+	const m = /filename="?([^";]+)"?/i.exec(resp.headers.get('Content-Disposition') || '');
+	const name = m ? m[1] : (new URL(url).pathname.split('/').pop() || 'das_data');
+	const blob = await resp.blob();
+
+	/* An object URL names the in-memory bytes; a link with a download
+	 * attribute pointed at it saves them instead of navigating */
+	const href = URL.createObjectURL(blob);
+	const a = el('a', {href, download: name});
+	document.body.append(a);
+	a.click();
+	a.remove();
+	setTimeout(() => URL.revokeObjectURL(href), 10000);
+	return `saved ${name}, ${blob.size} bytes`;
 }
 
 /* An entry das2C can't load: the listing is all there is */
@@ -204,7 +239,7 @@ tree.addEventListener('das-error', ev => {
 function open(seed, internal)
 {
 	freeSource();
-	info.replaceChildren();
+	placeholder();
 	tree.catalog = null;   /* never free a catalog the tree still holds */
 	if(cat) cat.free();
 
@@ -258,6 +293,56 @@ async function clickRow(under, lbl)
 	return {row, ...ev.detail};
 }
 
+/* The MSC BAC request form, as a user would drive it: examples, a typed
+ * time das2C rejects, then a day-of-year time it reads */
+function checkForm()
+{
+	const form = info.querySelector('das-source-form');
+	if(!form) throw new Error('no request form for MSC BAC');
+	const fr = form.shadowRoot;
+	const [view, save] = info.querySelectorAll('[slot=actions] button');
+
+	const exBtns = [...fr.querySelectorAll('[part=examples] button')].filter(b => b.textContent !== 'Defaults');
+	if(exBtns.length !== 2) throw new Error(`${exBtns.length} example buttons`);
+	exBtns[1].click();   /* asks for CDF, which can only be downloaded */
+	if(!form.current.ok || form.current.mime !== 'application/x-cdf')
+		throw new Error(`CDF example: ok ${form.current.ok}, mime '${form.current.mime}'`);
+	if(!view.disabled || save.disabled) throw new Error('CDF example: want Download only');
+	const fmtNow = fr.querySelector('[data-section=formats] summary .now').textContent;
+	if(fmtNow !== ': CDF file') throw new Error(`format heading '${fmtNow}'`);
+	exBtns[0].click();
+	if(view.disabled) throw new Error('das stream example: View Structure is off');
+
+	/* 'change' is what a browser fires when a typed value is committed */
+	const tmin = fr.getElementById('f-coords.time.min');
+	const type = text => { tmin.value = text; tmin.dispatchEvent(new Event('change')); };
+	const row = tmin.parentElement;
+
+	type('Tuesday');
+	const why = row.querySelector('[part=why]').textContent;
+	if(!why.includes('Tuesday') || tmin.getAttribute('aria-invalid') !== 'true' || !save.disabled)
+		throw new Error(`bad time: why '${why}', download ${save.disabled ? 'off' : 'on'}`);
+
+	type('2026-195T22:11');
+	const echo = row.querySelector('.echo').textContent;
+	if(echo !== '= 2026-07-14T22:11:00') throw new Error(`day of year echo '${echo}'`);
+	if(!form.current.ok || row.querySelector('[part=why]').textContent !== '')
+		throw new Error('day of year time refused');
+	/* The URL line reads decoded but links to the real URL */
+	const urlA = fr.querySelector('[part=url] a');
+	if(!urlA || urlA.href !== form.current.url || !form.current.url.includes('read.time.min=2026-195T22%3A11')
+	   || !urlA.textContent.includes('read.time.min=2026-195T22:11'))
+		throw new Error(`url line '${urlA?.textContent}' -> ${urlA?.href}`);
+
+	/* Defaults: back to the source's own, which has no times */
+	const defs = [...fr.querySelectorAll('[part=examples] button')].find(b => b.textContent === 'Defaults');
+	defs.click();
+	if(tmin.value !== '' || form.current.ok || !save.disabled)
+		throw new Error(`Defaults left time '${tmin.value}', ok ${form.current.ok}`);
+	return `form: 2 examples, a bad time flagged, 2026-195T22:11 read as 2026-07-14T22:11:00, `
+		+ `decoded URL linked, Defaults clears`;
+}
+
 async function selfCheck()
 {
 	const opened = await Promise.race([next('das-open'), next('das-error')]);
@@ -277,6 +362,8 @@ async function selfCheck()
 		if(kids !== sel.node.children.length) throw new Error(`${kids} rows under ${lbl}, ${sel.node.children.length} children`);
 		at = sel.row.parentElement.querySelector(':scope > ul');
 	}
+	if(info.querySelector('.placeholder') === null || info.childElementCount !== 1)
+		throw new Error('a container filled the details pane');
 
 	if(!drawnAsLeaf(findRow(at, 'MSC BAC'))) throw new Error('MSC BAC drawn as a container before opening');
 	sel = await clickRow(at, 'MSC BAC');
@@ -287,13 +374,7 @@ async function selfCheck()
 		throw new Error('MSC BAC row still drawn as a container');
 	const srcUri = sel.node.uri;
 
-	/* Its second example asks for CDF, which can only be downloaded */
-	const pick = info.querySelector('select');
-	const button = () => info.querySelector('button').textContent;
-	if(button() !== 'Fetch and View Structure') throw new Error(`example 0 button '${button()}'`);
-	pick.value = '1';
-	pick.dispatchEvent(new Event('change'));
-	if(button() !== 'Download') throw new Error(`CDF example button '${button()}'`);
+	const formMsg = checkForm();
 	const SA = 'SpecAnalyzer-4s-Efield';
 
 	/* no-collapse redraws the tree; the Collection must then open as one */
@@ -345,7 +426,7 @@ async function selfCheck()
 	if(!sel.node.isSource || sel.entry.name !== 'flex')
 		throw new Error(`seeded MSC BAC gave a ${sel.node.kind} / ${sel.entry.name}`);
 
-	return `opened ${top.uri}, ${n} rows; down to L2, MSC BAC collapsed to ${srcUri}; `
+	return `opened ${top.uri}, ${n} rows; down to L2, MSC BAC collapsed to ${srcUri}; ${formMsg}; `
 		+ `with no-collapse ${SA} opened with ${nColl} row(s), the DSDF entry linked; `
 		+ `a two-source set drawn as a source opened with ${nTwo}`;
 }
