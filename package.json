@@ -1,9 +1,8 @@
 {
 	"name": "das3js",
 	"version": "0.1.0",
-	"private": true,
 	"description": "Read das streams and walk das catalogs in web browsers: das2C compiled to WebAssembly",
-	"license": "SEE LICENSE IN LICENSE",
+	"license": "MIT AND LGPL-2.1-only",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/das-developers/das3js.git"
@@ -14,6 +13,7 @@
 		"./source-form": "./build.wasm32/das-source-form.mjs"
 	},
 	"files": [
+		"LICENSES",
 		"build.wasm32/das3js.mjs",
 		"build.wasm32/das2c.mjs",
 		"build.wasm32/das2c.wasm",

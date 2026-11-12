@@ -1,4 +1,4 @@
-/* Copyright (C) 2026 Chris Piker
+/*! Copyright (C) 2026 Chris Piker, @license MIT
  *
  * This file is part of das3js, das stream utilities for browsers.
  * See the LICENSE file in the repository root for terms.

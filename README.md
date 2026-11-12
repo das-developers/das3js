@@ -19,8 +19,8 @@ Currently, the renderer is mostly for performance tests.
 
 Layout:
 
-  * `src/` - the ES modules: `das3js.mjs`, the core, and
-    `das-catalog-tree.mjs`, a `<das-catalog-tree>` element
+  * `src/` - the ES modules: `das3js.mjs`, the core, and two custom
+    elements, `<das-catalog-tree>` and `<das-source-form>`
   * `glue/` - a small flat C interface over das2C, the wasm export surface
   * `test/` - the glue test (wasm under node) and the browser tests
     (headless Firefox via a node runner)
@@ -67,6 +67,31 @@ strm.free();                                // datasets live in wasm memory
 that view the decoded data directly.  Das3js runs in browsers and web
 workers; Node is not supported yet.
 
+Two optional custom elements build on the core, for pages that let
+people find and request data.  Each import defines its tag:
+
+```js
+import 'das3js/catalog-tree';    // <das-catalog-tree>: browse a das catalog
+import 'das3js/source-form';     // <das-source-form>: a request form for one source
+
+const tree = document.querySelector('das-catalog-tree');
+const form = document.querySelector('das-source-form');
+tree.catalog = das3.newCatalog();
+tree.addEventListener('das-select', ev => {
+	const node = ev.detail.node;
+	if(!node?.isSource) return;
+	const old = form.source;
+	form.source = node.source();       // the page owns sources,
+	old?.free();                       // so it frees the one replaced
+});
+form.addEventListener('das-request', ev => fetchOrDownload(ev.detail.url));
+```
+
+They draw in a shadow root and take their colors from `--das-*` CSS
+custom properties; the comment at the top of each file lists those, the
+attributes and the events.  The form never fetches; it hands the page a
+checked request URL.
+
 The package is three files that must stay together: `das3js.mjs`, its
 loader `das2c.mjs`, and the compiled library `das2c.wasm`, about 225 KB
 over the wire.  The loader finds the `.wasm` beside itself, and the
@@ -87,6 +112,15 @@ path.  You can exclude it from pre-bundling in `vite.config.js`:
 ```js
 export default {
 	optimizeDeps: {exclude: ['das3js']},
+};
+```
+
+To ship the license notices with your app, turn on `build.license`;
+Vite then writes `.vite/license.md`, das3js's notices included:
+
+```js
+export default {
+	build: {license: true},
 };
 ```
 
@@ -136,7 +170,16 @@ the setups above and runs them in headless Firefox; see
 ## Building
 
 Like the other das2C bindings (das2py, das2dlm), this project statically
-compiles in a selected das2C release, rather than depending on shared
-objects.  The current pin is das2C v3.0.4.  `notes/build.md` covers
-the toolchain, the build and the tests; `git submodule update --init` fetches
-the tagged sources.
+compiles in a selected das2C version, rather than depending on shared
+objects.  The current pin is das2C master at 6a9ba9e, v3.0.4 plus a fix
+for catalog option flags.  `notes/build.md` covers the toolchain, the
+build and the tests; `git submodule update --init` fetches the pinned
+sources.
+
+## License
+
+Das3js's own code, the JavaScript included, is MIT licensed.  The
+compiled `das2c.wasm` contains das2C and so is distributed under the
+LGPL 2.1.  Bundling and minifying with Vite, webpack and the like is
+fine and does not put an application under either license; see
+[LICENSE](LICENSE) for what each file is under and the notices to ship.
