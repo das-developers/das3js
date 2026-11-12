@@ -21,7 +21,7 @@
 
 ## Toolchain into the shell
 
-    source ~/opt/emsdk/emsdk_env.sh
+    source ~/opt/emsdk/emsdk_env.sh   # adjust to taste
 
 emsdk needs Python 3.10 or newer.  Where the system `python3` is older (Rocky
 9 ships 3.9, RHEL 8 3.6), bracket the line with two exports.  The second is
@@ -46,26 +46,32 @@ five times larger, so rebuild without it before deploying.
 ## Test
 
 Each target builds what it needs.  ERROR lines inside a run are expected
-when the run says they are intentional; the success line is the verdict.
-In run order; when working only on das3js code, skip the `deps` rows.
+when the run says they are intentional.  These are negative tests than 
+are supposed to fail.  The trailing success line is the final verdict.
+The command below are provided in run order, and when working only on
+das3js code, you can skip the `deps` rows.  Browser tests assume you have 
+firefox on your machine.
 
 | Command              | What it runs                                  | Success line                                      |
 |----------------------|-----------------------------------------------|---------------------------------------------------|
-| `make deps_test`     | das2C's own test suite as wasm under Node     | `All wasm test programs completed without errors` |
-| `make test`          | the C glue test as wasm under Node            | `All FFI layer checks passed`                     |
+| `make deps_test`     | das2C's test suite as wasm under Node         | `All wasm test programs completed without errors` |
+| `make test`          | the C glue test as wasm under Node            | `All Foreign function layer checks passed`        |
 | `make headless_test` | the module in headless Firefox, fixtures      | `All module checks passed`                        |
 | `make live_test`     | same, against space.physics.uiowa.edu         | `All live checks passed`                          |
 | `make local_test`    | same, against the dasFlex checkout next door  | `All live checks passed`                          |
 | `make pack_test`     | the npm package in Vite, webpack, plain page  | `page reported success`, once per run (four)      |
 
 `make deps_test` is the slow one, mostly das2C's `TestFeed`, and das2C's
-own CI runs it at the pinned commit; run it when das2C is the suspect.
+CI runs it at the pinned commit.  Run it when das2C is the suspect.
 `make live_test` needs the network.  The headless targets take
-`TEST_BROWSER=firefox`, the default and so far the only choice.
+`TEST_BROWSER=firefox`, as the default (and so far the only) choice.
 
-To use the pages in your own browser instead, run `make server` and load
-the URL it prints; Ctrl-C stops it.  It opens an index of the test pages
-and two tools:
+To use the pages in your own browser instead, run:
+```bash
+make server
+```
+and load the URL it that it prints. On Linux, Ctrl-C stops the test sever.  
+Your browser should open to an index of the test pages and two tools:
 
 * **Structure inspector:** give it any stream URL and it prints every
   dataset, dimension and variable as JSON, without the data values.  A
@@ -89,33 +95,33 @@ anything.
 ### Consumer tests
 
 A downstream developer installs that tarball into their own project and
-builds it with their own tools.  `test/npm/` holds one small project for
-each common setup, so the package is checked the way it is used:
+builds it with their own tools.  To assist downstream developers the
+directory `test/npm/` holds one small project for three common setups:
 
   * `vite/` - a Vite app, run both as a production build and under
     Vite's dev server
   * `webpack/` - a webpack app
-  * `importmap/` - a plain page with no build tools, as a CDN user would
-    write it
+  * `importmap/` - a plain page with no build tools, as a content 
+    delivery network (CDN) user would write it
 
-None of them configures anything for das3js; the README's install notes
-are true only while these pass.  Each loads das2C's ex08 fixture and
-passes if all 13 datasets parse.
+Each loads das2C's `example/ex08_cassini_rpws_survey.d2t` and passes if
+all 13 datasets in that stream parse.
 
 `make pack_test` packs, installs the tarball into each project, builds
 them, and runs each in headless Firefox.  The tools themselves (Vite,
-webpack) come from each project's own lockfile.  A new project, or a
+webpack) come from each project's lockfile.  A new project, or a
 fresh lockfile after changing a tool's version, needs one `npm install`
 in its directory first, which downloads the tools.
 
-npm and the tools run under whichever `node` is first on PATH, and
+Npm and the tools run under whichever `node` is first on PATH, and
 sourcing emsdk does not put its own Node there.  Where the system Node
 is too old for Vite (it wants 20.19 or newer), put emsdk's first.  The
-Makefile does this itself; for commands by hand:
+Makefile does this itself. If you run manual commands adjust the path:
 
     export PATH=$(dirname $EMSDK_NODE):$PATH
 
-The steps `make pack_test` takes, to run one at a time:
+Here's the steps that `make pack_test` takes, in case you'd like to
+run one at a time:
 
     make pack
     cd test/npm/vite
@@ -129,41 +135,51 @@ The steps `make pack_test` takes, to run one at a time:
     node test/browser/run.mjs index.html --app=test/npm/webpack
     node test/browser/run.mjs index.html --app=test/npm/importmap
 
-`--no-save` keeps the tarball out of the project's package.json and
-lockfile, so they list only the project's tools.  `--app=DIR` serves a
-project's page at the site root, and `--vite-dev=DIR` runs the project's
-own Vite dev server inside the runner; either way the fixtures under
-`/das2C/` stay reachable.  Before a dev server run, `rm -rf
-test/npm/vite/node_modules/.vite` makes Vite pre-bundle das3js from
-scratch, as `make pack_test` does.
+Some notes on the options:
 
-Add `--serve` to any of the four to watch the page in your own browser
-instead: it prints the URL, the devtools network tab shows where
-`das2c.wasm` came from, and Ctrl-C stops it.  Don't use `npx vite` in
-`test/npm/vite` for this: Vite's own server knows nothing of the
-fixtures or the test reporting, so the page fails.
+* `--no-save` keeps the tarball out of the project's package.json and
+lockfile, so they list only the project's tools.  
+* `--app=DIR` serves a project's page at the site root. 
+* `--vite-dev=DIR` runs the project's Vite dev server inside the runner 
 
-## Putting the pages on a web server
+No matter the options, the examples under `/das2C/` are reachable.  
 
-Everything is static files; the browser does the work.
+Note: before a dev server run you can issue `rm -rf test/npm/vite/node_modules/.vite` 
+to make Vite pre-bundle das3js from scratch, as `make pack_test` does.
+
+To observe the tests, add Add `--serve` to any of the four to watch the
+page in your own browser instead: it prints the URL, the devtools network
+tab shows where `das2c.wasm` came from, and Ctrl-C stops it.
+
+Don't use `npx vite` in `test/npm/vite` for this. Vite's server doesn't know
+where to find the example streams or the test reporting location so the page
+fails.
+
+## Deploying to a local web server
+
+All build products are static files, the browser does the work.
 
     make dist HTPASSWD=/server/path/.htpasswd
     rsync -a --delete build.wasm32/site/ host:/web/dir/das3js/
 
-* `build.wasm32/site/` is about 15 MB.  Most of that is one fixture,
-  ex08.  The tree has the same layout `make server` uses, so it works
+* `build.wasm32/site/` is about 15 MB.  Most of that is the one text,
+  example.  The tree has the same layout `make server` uses, so it works
   under any URL prefix.
+
 * The generated `.htaccess` declares the `.wasm` and `.mjs` types.  The
-  browser refuses the module without them.  It needs `AllowOverride
-  FileInfo`.
+  browser refuses the module without them.  It needs `AllowOverride FileInfo`.
+
 * `HTPASSWD` is optional and is a path on the server.  It adds basic auth,
   which needs `AllowOverride AuthConfig`.  Create the password file on the
   server with `htpasswd -c /server/path/.htpasswd someuser`.
+
 * The pages talk to the node runner only when served from 127.0.0.1, so a
   real server never sees their log POSTs.  TestModule's login exchange
   needs the runner's `/auth/` too and is skipped elsewhere.
+
 * The internal test catalog, `test/catalog/`, is staged as `catalog/`, so
   `Catalog.html?internal=1` and TestModule's catalog checks work there too.
+
 * The data presets fetch from the das servers cross origin, which works
   because those servers send `Access-Control-Allow-Origin: *`.
 
@@ -172,19 +188,23 @@ Everything is static files; the browser does the work.
     make clean       # this project's and das2C's wasm build output
     make distclean   # also das2C's downloaded dependencies
 
-`clean` is the everyday reset, and the one to use after pulling a new das2C:
-it rebuilds all of das2C's own code, which is quick.  It keeps
-`deps/das2C/deps.wasm32/`, the expat and FFTW builds.  Use `distclean`
-when a dependency itself is in doubt.  The next build downloads and
-rebuilds them, which is several minutes, most of it compiling FFTW.
+`clean` is the everyday reset, and the one to use after pulling a new das2C.
+It rebuilds all of the das2C code, which is quick.  It preserves the 
+expat and FFTW builds in `deps/das2C/deps.wasm32/`. 
+
+Use `distclean` when a dependency itself is in doubt.  The next build
+downloads and rebuilds them, which is several minutes, most of it compiling
+FFTW.
 
 ## When something fails
 
 * The failing check names itself in the test output.
+
 * In the browser tests, lines prefixed `firefox:` are Firefox's console, and
   das2C's log messages appear there too.  A
   `[GFX1-]: RenderCompositorSWGL failed mapping default framebuffer` line is
   headless Firefox without a GPU, not a failure.
+  
 * A link error `emcc: error: ... -Werror` after an emsdk upgrade is a new
   emscripten warning, not a code problem; see the warning flags in the
   Makefile.
