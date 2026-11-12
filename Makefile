@@ -186,7 +186,7 @@ DAS2C_EXPORTS=\
  new_DasSrc_node del_DasSrc DasSrc_title DasSrc_needsAuth DasSrc_authRealm \
  DasSrc_numExamples DasSrc_exampleLblAt new_DasReq_src DasSrc_mime \
  DasSrc_reqUrl \
- del_DasReq DasReq_set
+ del_DasReq DasReq_set DasSrc_check
 
 # emcc wants one comma separated list with a leading underscore on each name
 EMPTY:=

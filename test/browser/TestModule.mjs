@@ -503,6 +503,41 @@ async function catalogChecks(d)
 		log(`INFO: catalog: request ${freq.url} (${freq.mime || 'no mime'})`);
 		const cdf = fs.request(1);
 		check(cdf.mime === 'application/x-cdf', `CDF example mime '${cdf.mime}'`);
+
+		/* The form model, examples as settings, and per key verdicts */
+		const form = fs.form;
+		check(fs.form === form, 'form snapshot read twice');
+		const secs = form.sections.map(sc => sc.name).join(',');
+		check(secs === 'coords,data,formats', `form sections ${secs}`);
+		const props = new Map();
+		for(const sc of form.sections) for(const g of sc.groups) for(const p of g.props) props.set(p.key, p);
+		const tmin = props.get('coords.time.min');
+		check(tmin?.ctrl?.required && tmin.label === 'Minimum' && tmin.value === null,
+			'coords.time.min: required, labeled, no default');
+		check(tmin?.ctrl?.range?.[0] === '2025-09-26T01:54', `time range ${tmin?.ctrl?.range}`);
+		const fmts = form.sections.find(sc => sc.name === 'formats').groups;
+		check(fmts.every(g => g.xorGroup === 'format' && g.enable === `formats.${g.name}.enabled`),
+			'format groups are one exclusive set with enable keys');
+
+		const ex1 = fs.example(1);
+		check(ex1.label === 'Most Recent Day (CDF)' && ex1.settings['formats.cdf.enabled'] === 'true',
+			`example 1 settings ${JSON.stringify(ex1.settings)}`);
+		check(fs.check(ex1.settings).mime === 'application/x-cdf', 'example settings check out as the example');
+
+		const blank = fs.check();
+		const missing = blank.entries.filter(e => e.verdict === 'bad').map(e => e.key).sort().join(',');
+		check(!blank.ok && blank.url === '' && missing === 'coords.time.max,coords.time.min',
+			`blank form: missing ${missing}`);
+		const good = fs.check({time: '2025-10-01T12'});
+		check(good.ok && good.bad === 0 && good.url === freq.url,
+			`checked url ${good.url} differs from request() ${freq.url}`);
+		/* Full keys, as a form uses them, fill the blank form's placeholders:
+		 * one entry, one verdict per property */
+		const oops = fs.check({'coords.time.min': 'Tuesday', 'coords.time.max': '2025-10-02'});
+		const why = oops.entries.find(e => e.key === 'coords.time.min');
+		check(!oops.ok && oops.bad === 1 && oops.entries.length === 2 && why?.verdict === 'bad' && why.why !== '',
+			`bad time: ${oops.bad} bad, entries ${JSON.stringify(oops.entries)}`);
+		log(`INFO: catalog: form ${secs}, ${props.size} properties; bad time: ${why?.why}`);
 		fs.free();
 	}
 

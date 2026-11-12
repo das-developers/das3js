@@ -222,6 +222,11 @@ export class DasRuntime {
 			srcUrl:        w('DasSrc_reqUrl', N, [N, N, N, N, N]),
 			reqDel:        w('del_DasReq', null, [N]),
 			reqSet:        f('DasReq_set', N, [N, S, S]),
+			srcJson:       f('daswasm_src_json', N, [N]),
+			reqJson:       f('daswasm_req_json', N, [N]),
+			/* A failed check is a normal answer, explained per entry by
+			 * reqJson, so it doesn't go through f() and lastError() */
+			srcCheck:      w('DasSrc_check', N, [N, N, N]),
 		};
 
 		this.#c.init(progName);
@@ -1757,6 +1762,7 @@ export class DasCatNode {
 export class DasCatSource {
 	#d;
 	#p;
+	#form = null;   /* the form snapshot, read on first use */
 
 	constructor(das3, pNode)
 	{
@@ -1801,21 +1807,128 @@ export class DasCatSource {
 	request(example, settings = {})
 	{
 		const c = this.#d._c();
-		const m = this.#d._m();
 		if(example === undefined) example = (c.srcExCount(this.#p) > 0) ? 0 : BLANK_REQ;
 
+		const req = this.#newReq(example, settings);
+		try{
+			const url = this.#url(req);
+			if(url === '')
+				throw new DasError('no request URL for these settings, see the console log');
+			return {url, mime: c.srcMime(this.#p, req)};
+		}
+		finally{ c.reqDel(req); }
+	}
+
+	/** Everything needed to draw a form for this source, as plain data.
+	 *
+	 * The source's interface definition as das2C reads it, in either of
+	 * the catalog layouts in use: sections (coords, data, formats,
+	 * options) of groups of properties.  A property with a `ctrl` may be
+	 * set; one without is fixed and only informative.  Field by field
+	 * description at daswasm_src_json() in glue/wasm.h.
+	 *
+	 * Read from C once and kept: a source does not change once loaded.
+	 *
+	 * @returns {object}
+	 */
+	get form()
+	{
+		if(this.#form === null)
+			this.#form = takeJson(this.#d, this.#d._c().srcJson(this.#p));
+		return this.#form;
+	}
+
+	/** What a worked example asks for, as settings for check() or request().
+	 *
+	 * @param {number} i Index into `examples`
+	 * @returns {{label: string, settings: object, raw: Array}} settings maps
+	 *        property keys ("coords.time.min") to values.  raw lists server
+	 *        parameters the example sets that no property explains, rare,
+	 *        and only from older catalogs.
+	 */
+	example(i)
+	{
+		const c = this.#d._c();
+		const req = c.srcNewReq(this.#p, i);
+		if(req === 0) throw new DasError(`no example ${i}: ${this.#d.lastError()}`);
+		try{
+			const snap = takeJson(this.#d, c.reqJson(req));
+			const settings = {};
+			for(const e of snap.entries) if(!e.derived) settings[e.key] = e.value;
+			return {label: snap.label, settings, raw: snap.raw};
+		}
+		finally{ c.reqDel(req); }
+	}
+
+	/** Validate settings the way a form would, entry by entry.
+	 *
+	 * Unlike request(), bad input does not throw: every key gets a verdict,
+	 * and the bad ones a reason meant to be shown beside the field.  Starting
+	 * blank (the default) lists each required key that is still missing.
+	 *
+	 * @param {object} [settings] Property keys to values, in any spelling
+	 *        das2C accepts (das3/source.h, "Keys").  The full keys from
+	 *        `form` give exactly one entry per property.  A blank start
+	 *        lists each required property under its full key, so a shorter
+	 *        spelling ("time.min") adds a second entry beside that one, and
+	 *        the empty placeholder is marked bad unless the other is good.
+	 * @param {number} [example] Start from this worked example; -1, the
+	 *        default, starts blank
+	 * @returns {{ok: boolean, bad: number, entries: Array, url: string,
+	 *        mime: string}} entries are {key, value, verdict, why, derived},
+	 *        verdict 'ok' or 'bad'.  url and mime are '' unless ok.
+	 * @throws {DasError} only when the request can't be built at all
+	 */
+	check(settings = {}, example = BLANK_REQ)
+	{
+		const c = this.#d._c();
+		const m = this.#d._m();
+		const req = this.#newReq(example, settings);
+		let pBad = 0;
+		try{
+			pBad = m._malloc(4);
+			const ok = (c.srcCheck(this.#p, req, pBad) === 0);
+
+			/* size_t is 32 bits in wasm32.  HEAP32 is re-read from the Module,
+			 * since _malloc may have grown the heap and detached old views. */
+			const bad = m.HEAP32[pBad >> 2];
+			const snap = takeJson(this.#d, c.reqJson(req));
+			const url = ok ? this.#url(req) : '';
+			const mime = ok ? c.srcMime(this.#p, req) : '';
+			return {ok: ok && (url !== ''), bad, entries: snap.entries, url, mime};
+		}
+		finally{
+			if(pBad) m._free(pBad);
+			c.reqDel(req);
+		}
+	}
+
+	/* A requisition from an example (or blank) with settings applied, or a
+	 * throw.  The caller deletes it. */
+	#newReq(example, settings)
+	{
+		const c = this.#d._c();
 		const req = c.srcNewReq(this.#p, example);
 		if(req === 0) throw new DasError(`no example ${example}: ${this.#d.lastError()}`);
-		let buf = 0;
-		try{
-			for(const [key, val] of Object.entries(settings))
-				if(c.reqSet(req, key, String(val)) !== 0)
-					throw new DasError(`can't set ${key}: ${this.#d.lastError()}`);
+		for(const [key, val] of Object.entries(settings)){
+			if(c.reqSet(req, key, String(val)) !== 0){
+				c.reqDel(req);
+				throw new DasError(`can't set ${key}: ${this.#d.lastError()}`);
+			}
+		}
+		return req;
+	}
 
-			/* snprintf style: the return is the length needed, so one retry
-			 * with the exact size covers any URL */
-			let size = 4096;
-			buf = m._malloc(size);
+	/* The URL for a requisition, '' when the settings don't make one */
+	#url(req)
+	{
+		const c = this.#d._c();
+		const m = this.#d._m();
+		/* snprintf style: the return is the length needed, so one retry
+		 * with the exact size covers any URL */
+		let size = 4096;
+		let buf = m._malloc(size);
+		try{
 			let n = c.srcUrl(this.#p, req, 0, buf, size);
 			if(n >= size){
 				m._free(buf);
@@ -1823,14 +1936,9 @@ export class DasCatSource {
 				buf = m._malloc(size);
 				n = c.srcUrl(this.#p, req, 0, buf, size);
 			}
-			if(n === 0)
-				throw new DasError('no request URL for these settings, see the console log');
-			return {url: cString(m, buf), mime: c.srcMime(this.#p, req)};
+			return (n === 0) ? '' : cString(m, buf);
 		}
-		finally{
-			if(buf) m._free(buf);
-			c.reqDel(req);
-		}
+		finally{ m._free(buf); }
 	}
 
 	/** Release the C side.  The object is unusable afterwards. */

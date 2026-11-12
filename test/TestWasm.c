@@ -25,6 +25,7 @@
 
 #include <das3/core.h>
 #include <das3/json.h>
+#include <das3/source.h>
 #include "wasm.h"
 
 #define CHECK(COND, MSG) \
@@ -360,6 +361,174 @@ static int checkSnapshot(DasStream* pSd, const char* sPath)
 	return 0;
 }
 
+/* ************************************************************************* */
+/* Data source snapshots: the form model and request verdicts */
+
+static char* slurp(const char* sPath, size_t* puLen)
+{
+	FILE* pFile = fopen(sPath, "rb");
+	if(pFile == NULL){ printf("ERROR: Couldn't open %s\n", sPath); return NULL; }
+	fseek(pFile, 0, SEEK_END);
+	long nLen = ftell(pFile);
+	fseek(pFile, 0, SEEK_SET);
+	char* s = (char*)malloc(nLen + 1);
+	*puLen = fread(s, 1, nLen, pFile);
+	s[*puLen] = '\0';
+	fclose(pFile);
+	return s;
+}
+
+static const char* jstrOf(const DasJdo* pJdo, const char* sPath)
+{
+	return DasJdo_str(DasJdo_subtree(pJdo, sPath));
+}
+
+/* A property dict from a source snapshot, by key */
+static const DasJdo* snapProp(const DasJdo* pSnap, const char* sKey)
+{
+	for(const DasJsonAryEl* pS = DasJdo_aryFirst(DasJdo_subtree(pSnap, "sections")); pS; pS = pS->next)
+		for(const DasJsonAryEl* pG = DasJdo_aryFirst(DasJdo_subtree(pS->value, "groups")); pG; pG = pG->next)
+			for(const DasJsonAryEl* pP = DasJdo_aryFirst(DasJdo_subtree(pG->value, "props")); pP; pP = pP->next)
+				if(strcmp(jstrOf(pP->value, "key"), sKey) == 0) return pP->value;
+	return NULL;
+}
+
+/* A group dict from a source snapshot, by section and name */
+static const DasJdo* snapGroup(const DasJdo* pSnap, const char* sSec, const char* sName)
+{
+	for(const DasJsonAryEl* pS = DasJdo_aryFirst(DasJdo_subtree(pSnap, "sections")); pS; pS = pS->next){
+		if(strcmp(jstrOf(pS->value, "name"), sSec) != 0) continue;
+		for(const DasJsonAryEl* pG = DasJdo_aryFirst(DasJdo_subtree(pS->value, "groups")); pG; pG = pG->next)
+			if(strcmp(jstrOf(pG->value, "name"), sName) == 0) return pG->value;
+	}
+	return NULL;
+}
+
+static bool jisnull(const DasJdo* p){ return (p != NULL) && (p->type == DASJSONTYPE_NULL); }
+
+/* The verdict of the first entry with this key in a request snapshot */
+static const DasJdo* reqEntry(const DasJdo* pReq, const char* sKey)
+{
+	for(const DasJsonAryEl* pE = DasJdo_aryFirst(DasJdo_subtree(pReq, "entries")); pE; pE = pE->next)
+		if(strcmp(jstrOf(pE->value, "key"), sKey) == 0) return pE->value;
+	return NULL;
+}
+
+/* Enum items with display labels, which the das2C fixtures lack */
+static const char* g_sLabeledSrc =
+"{\"type\":\"HttpStreamSrc\",\"version\":\"0.7\",\"name\":\"labeled\",\"title\":\"Labeled choices\","
+ "\"protocol\":{\"method\":\"GET\",\"baseUrls\":[\"http://127.0.0.1:8765/data/labeled\"],"
+  "\"httpParams\":{\"read.time.min\":{\"required\":true,\"type\":\"isotime\"},"
+   "\"read.time.max\":{\"required\":true,\"type\":\"isotime\"},"
+   "\"read.params\":{\"type\":\"FlagSet\",\"flagSep\":\" \",\"flags\":{\"anode\":{\"prefix\":\"anode=\"}}}}},"
+ "\"interface\":{\"coords\":{\"time\":{\"props\":{"
+   "\"min\":{\"set\":{\"param\":\"read.time.min\",\"required\":true}},"
+   "\"max\":{\"set\":{\"param\":\"read.time.max\",\"required\":true}}}}},"
+  "\"data\":{\"flux\":{\"label\":\"Counts\",\"props\":{\"anode\":{\"label\":\"Anode\",\"type\":\"enum\",\"value\":\"0\","
+   "\"set\":{\"param\":\"read.params\",\"flag\":\"anode\",\"enum\":["
+    "{\"value\":\"0\",\"label\":\"0 (-10 deg)\"},{\"value\":\"8\",\"label\":\"8 (70 deg)\"}]}}}}}}}";
+
+static int checkSources(void)
+{
+	size_t uLen = 0;
+	char* sDoc = slurp("test/das_fetch/geomag_flex_0.7.json", &uLen);
+	CHECK(sDoc != NULL, "geomag fixture");
+	DasSrc* pSrc = new_DasSrc_json(sDoc, uLen, "site:/test/geomag", NULL);
+	free(sDoc);
+	CHECK(pSrc != NULL, "geomag loads as a source");
+
+	char* sSnap = daswasm_src_json(pSrc);
+	CHECK(sSnap != NULL, "source snapshot");
+	DasJdo* pSnap = new_DasJdo_parse(sSnap, strlen(sSnap));
+	CHECK(pSnap != NULL, "source snapshot parses");
+	daswasm_free(sSnap);
+
+	CHECK(strcmp(jstrOf(pSnap, "kind"), "stream") == 0, "kind");
+	CHECK(DasJdo_ary(DasJdo_subtree(pSnap, "examples"))->length == DasSrc_numExamples(pSrc),
+	      "one example label per example");
+
+	const DasJdo* p = snapProp(pSnap, "coords.time.min");
+	CHECK(p != NULL, "coords.time.min in the snapshot");
+	CHECK(strcmp(jstrOf(p, "label"), "Minimum") == 0, "property label");
+	CHECK(jisnull(DasJdo_subtree(p, "value")), "no default: null");
+	CHECK(DasJdo_subtree(p, "ctrl/required")->type == DASJSONTYPE_TRUE, "required");
+	const DasJsonAryEl* pR = DasJdo_aryFirst(DasJdo_subtree(p, "ctrl/range"));
+	CHECK(pR && pR->next && (strcmp(DasJdo_str(pR->next->value), "now") == 0), "validRange reaches the control");
+
+	p = snapProp(pSnap, "coords.time.units");
+	CHECK(p && jisnull(DasJdo_subtree(p, "ctrl")) && (strcmp(jstrOf(p, "value"), "UTC") == 0),
+	      "a fixed property: no ctrl, its value");
+
+	const DasJdo* pG = snapGroup(pSnap, "formats", "das");
+	CHECK(pG != NULL, "das format group");
+	CHECK(strcmp(jstrOf(pG, "xorGroup"), "format") == 0, "formats are exclusive");
+	CHECK(strcmp(jstrOf(pG, "enable"), "formats.das.enabled") == 0, "enable key");
+	CHECK(DasJdo_ary(DasJdo_subtree(pG, "mimes"))->length > 0, "format media types");
+
+	p = snapProp(pSnap, "formats.csv.delimiter");
+	const DasJsonAryEl* pC = p ? DasJdo_aryFirst(DasJdo_subtree(p, "ctrl/choices")) : NULL;
+	CHECK(pC && (strcmp(jstrOf(pC->value, "value"), "Comma") == 0) && jisnull(DasJdo_subtree(pC->value, "label")),
+	      "choices in node order, label null when the node gives none");
+	del_DasJdo(pSnap);
+
+	/* Verdicts: the example checks clean, a bad time is caught and explained */
+	DasReq* pReq = new_DasReq_src(pSrc, 0);
+	CHECK(pReq != NULL, "example 0");
+	CHECK(DasSrc_check(pSrc, pReq, NULL) == DAS_OKAY, "example 0 checks clean");
+	char* sReq = daswasm_req_json(pReq);
+	DasJdo* pRJ = sReq ? new_DasJdo_parse(sReq, strlen(sReq)) : NULL;
+	daswasm_free(sReq);
+	const DasJdo* pE = pRJ ? reqEntry(pRJ, "coords.time.min") : NULL;
+	CHECK(pE && (strcmp(jstrOf(pE, "verdict"), "ok") == 0), "ok verdict");
+	del_DasJdo(pRJ);
+
+	/* Bad input is a verdict, not a log message: a form checks on every
+	   keystroke pause and must not flood the console */
+	DasReq_set(pReq, "coords.time.min", "not a time");
+	size_t uBad = 0;
+	CHECK(DasSrc_check(pSrc, pReq, &uBad) != DAS_OKAY && uBad == 1, "one bad entry");
+	sReq = daswasm_req_json(pReq);
+	pRJ = sReq ? new_DasJdo_parse(sReq, strlen(sReq)) : NULL;
+	daswasm_free(sReq);
+	pE = pRJ ? reqEntry(pRJ, "coords.time.min") : NULL;
+	CHECK(pE && (strcmp(jstrOf(pE, "verdict"), "bad") == 0) && (jstrOf(pE, "why")[0] != '\0'),
+	      "bad verdict with a reason");
+	del_DasJdo(pRJ);
+	del_DasReq(pReq);
+	del_DasSrc(pSrc);
+
+	/* 2018 layout: the same snapshot shape */
+	sDoc = slurp("test/das_fetch/juno_survey_0.6.json", &uLen);
+	CHECK(sDoc != NULL, "juno fixture");
+	pSrc = new_DasSrc_json(sDoc, uLen, "site:/test/juno", NULL);
+	free(sDoc);
+	CHECK(pSrc != NULL, "juno loads as a source");
+	sSnap = daswasm_src_json(pSrc);
+	pSnap = sSnap ? new_DasJdo_parse(sSnap, strlen(sSnap)) : NULL;
+	daswasm_free(sSnap);
+	CHECK(pSnap && snapProp(pSnap, "coords.time.minimum") && snapGroup(pSnap, "options", ""),
+	      "2018 layout: long key spellings and the anonymous options group");
+	del_DasJdo(pSnap);
+	del_DasSrc(pSrc);
+
+	/* Labeled enum items */
+	pSrc = new_DasSrc_json(g_sLabeledSrc, strlen(g_sLabeledSrc), "site:/test/labeled", NULL);
+	CHECK(pSrc != NULL, "labeled source");
+	sSnap = daswasm_src_json(pSrc);
+	pSnap = sSnap ? new_DasJdo_parse(sSnap, strlen(sSnap)) : NULL;
+	daswasm_free(sSnap);
+	p = pSnap ? snapProp(pSnap, "data.flux.anode") : NULL;
+	CHECK(p && (strcmp(jstrOf(p, "label"), "Anode") == 0), "enum property label");
+	pC = p ? DasJdo_aryFirst(DasJdo_subtree(p, "ctrl/choices")) : NULL;
+	CHECK(pC && pC->next && (strcmp(jstrOf(pC->next->value, "label"), "8 (70 deg)") == 0),
+	      "enum item labels");
+	del_DasJdo(pSnap);
+	del_DasSrc(pSrc);
+
+	printf("INFO: data source snapshots agree with das2C\n");
+	return 0;
+}
+
 int main(int argc, char** argv)
 {
 	daswasm_init(argv[0]);
@@ -461,6 +630,8 @@ int main(int argc, char** argv)
 	}
 	(void)DasWasmRdr_end(pRdr);
 	del_DasWasmRdr(pRdr);
+
+	if(checkSources() != 0) return 64;
 
 	printf("INFO: All FFI layer checks passed\n");
 	return 0;

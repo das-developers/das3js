@@ -35,6 +35,13 @@
 #include <das3/var_p.h>
 #include <das3/gen_p.h>
 
+/* Private too, for the source snapshot only: das2C has a short caption for
+   a group (DasSrcGroup_label) but none for a property, and gives an enum
+   control's values but not their display labels.  Both are read from the
+   node through the property's dict.  Upstream request in das2C's co_notes,
+   request_das3js_srcprop_labels.md. */
+#include <das3/source_p.h>
+
 #include "wasm.h"
 
 /* ************************************************************************* */
@@ -1157,6 +1164,219 @@ char* daswasm_node_json(const DasNode* pNode)
 	}
 	_jb_raw(&b, "]");
 
+	_jb_raw(&b, "}");
+
+	if(b.err){ free(b.s); return NULL; }
+	return b.s;
+}
+
+/* ************************************************************************* */
+/* Data source snapshot */
+
+static const char* _srcsec_tok(das_srcsec sec)
+{
+	const char* s = dassrcsec_name(sec);
+	return (s != NULL) ? s : "";
+}
+
+static const char* _srcproptype_tok(das_srcproptype t)
+{
+	switch(t){
+	case DASSRCPROPTYPE_BOOL: return "boolean";
+	case DASSRCPROPTYPE_INT:  return "integer";
+	case DASSRCPROPTYPE_REAL: return "real";
+	case DASSRCPROPTYPE_TIME: return "time";
+	case DASSRCPROPTYPE_ENUM: return "enum";
+	default:                  return "text";
+	}
+}
+
+/* A string member of a node dict, or NULL */
+static const char* _jdo_mstr(const DasJdo* pDict, const char* sName)
+{
+	return (pDict == NULL) ? NULL : DasJdo_str(DasJdo_subtree(pDict, sName));
+}
+
+/* A property's short caption, the same rule DasSrcGroup_label() applies to
+   groups: the node's label, else its name.  NULL when it has neither, so
+   the caller can tell "no caption" from an empty one. */
+static const char* _srcprop_label(const DasSrcProp* p)
+{
+	const char* s = _jdo_mstr(p->pJdo, "label");
+	return (s != NULL) ? s : _jdo_mstr(p->pJdo, "name");
+}
+
+/* The display label of one enum value, NULL when the node gives none.
+   Matched by value rather than position: das2C skips enum items it can't
+   read, so its indices need not line up with the node's. */
+static const char* _srcctrl_enumLabel(const DasSrcCtrl* pC, const char* sVal)
+{
+	const DasJdo* pEnum = DasJdo_subtree(pC->pSet, "enum");
+	char sItem[256];
+	for(const DasJsonAryEl* pEl = DasJdo_aryFirst(pEnum); pEl; pEl = pEl->next){
+		if(pEl->value->type != DASJSONTYPE_DICT) continue;
+		const DasJdo* pItem = DasJdo_subtree(pEl->value, "value");
+		if(!_das_json_scalar(pItem, sItem, sizeof(sItem))) continue;
+		if(strcmp(sItem, sVal) == 0) return _jdo_mstr(pEl->value, "label");
+	}
+	return NULL;
+}
+
+static void _jb_srcCtrl(JBuf* b, const DasSrcCtrl* pC)
+{
+	if(pC == NULL){ _jb_null(b); return; }
+	_jb_open(b, "{");
+	_jb_key(b, "param");    _jb_str(b, DasSrcCtrl_param(pC));
+	_jb_key(b, "required"); _jb_bool(b, DasSrcCtrl_isRequired(pC));
+
+	_jb_key(b, "choices");  _jb_open(b, "[");
+	size_t uEnum = DasSrcCtrl_numEnums(pC);
+	for(size_t u = 0; u < uEnum; ++u){
+		const char* sVal = DasSrcCtrl_enumAt(pC, u);
+		_jb_open(b, "{");
+		_jb_key(b, "value"); _jb_str(b, sVal);
+		_jb_key(b, "label"); _jb_strOrNull(b, _srcctrl_enumLabel(pC, sVal));
+		_jb_raw(b, "}");
+	}
+	_jb_raw(b, "]");
+
+	/* either end may be absent, and "now" is a legal high end */
+	const char* sLo = NULL;
+	const char* sHi = NULL;
+	_jb_key(b, "range");
+	if(DasSrcCtrl_range(pC, &sLo, &sHi)){
+		_jb_open(b, "[");
+		_jb_strOrNull(b, sLo);
+		_jb_strOrNull(b, sHi);
+		_jb_raw(b, "]");
+	}
+	else
+		_jb_null(b);
+	_jb_raw(b, "}");
+}
+
+static void _jb_srcProp(JBuf* b, const DasSrcProp* p)
+{
+	char sTitle[128];
+	_jb_open(b, "{");
+	_jb_key(b, "key");      _jb_str(b, DasSrcProp_key(p));
+	_jb_key(b, "name");     _jb_str(b, DasSrcProp_name(p));
+	_jb_key(b, "label");    _jb_strOrNull(b, _srcprop_label(p));
+	_jb_key(b, "title");    _jb_str(b, DasSrcProp_title(p, sTitle, sizeof(sTitle)));
+	_jb_key(b, "type");     _jb_str(b, _srcproptype_tok(DasSrcProp_type(p)));
+	_jb_key(b, "typeName"); _jb_str(b, DasSrcProp_typeName(p));
+	_jb_key(b, "units");    _jb_str(b, DasSrcProp_units(p));
+	_jb_key(b, "value");    _jb_strOrNull(b, DasSrcProp_value(p));
+	_jb_key(b, "ctrl");     _jb_srcCtrl(b, DasSrcProp_ctrl(p));
+	_jb_raw(b, "}");
+}
+
+static void _jb_srcGroup(JBuf* b, const DasSrcGroup* pG)
+{
+	const DasSrcProp* pOn = DasSrcGroup_enableProp(pG);
+	_jb_open(b, "{");
+	_jb_key(b, "name");     _jb_str(b, DasSrcGroup_name(pG));
+	_jb_key(b, "label");    _jb_str(b, DasSrcGroup_label(pG));
+	_jb_key(b, "title");    _jb_str(b, DasSrcGroup_title(pG));
+	_jb_key(b, "enable");   _jb_strOrNull(b, pOn ? DasSrcProp_key(pOn) : NULL);
+	_jb_key(b, "xorGroup"); _jb_strOrNull(b, DasSrcGroup_xorGroup(pG));
+	_jb_key(b, "mimes");    _jb_open(b, "[");
+	for(size_t u = 0; u < DasSrcGroup_numMimes(pG); ++u) _jb_str(b, DasSrcGroup_mimeAt(pG, u));
+	_jb_raw(b, "]");
+	_jb_key(b, "props");    _jb_open(b, "[");
+	for(size_t u = 0; u < DasSrcGroup_numProps(pG); ++u) _jb_srcProp(b, DasSrcGroup_propAt(pG, u));
+	_jb_raw(b, "]");
+	_jb_raw(b, "}");
+}
+
+char* daswasm_src_json(const DasSrc* pSrc)
+{
+	if(pSrc == NULL) return NULL;
+	JBuf b = {NULL, 0, 0, 0};
+
+	_jb_open(&b, "{");
+	_jb_key(&b, "ptr");       _jb_int(&b, (long long)(uintptr_t)pSrc);
+	_jb_key(&b, "kind");      _jb_str(&b, (DasSrc_kind(pSrc) == DASSRCKIND_STREAM) ? "stream" : "");
+	_jb_key(&b, "path");      _jb_strOrNull(&b, DasSrc_path(pSrc));
+	_jb_key(&b, "url");       _jb_strOrNull(&b, DasSrc_url(pSrc));
+	_jb_key(&b, "name");      _jb_str(&b, DasSrc_name(pSrc));
+	_jb_key(&b, "title");     _jb_str(&b, DasSrc_title(pSrc));
+	_jb_key(&b, "version");   _jb_str(&b, DasSrc_version(pSrc));
+	_jb_key(&b, "needsAuth"); _jb_bool(&b, DasSrc_needsAuth(pSrc));
+	_jb_key(&b, "authRealm"); _jb_str(&b, DasSrc_authRealm(pSrc));
+
+	_jb_key(&b, "contacts");  _jb_open(&b, "[");
+	for(size_t u = 0; u < DasSrc_numContacts(pSrc); ++u){
+		const char* sEmail = NULL;
+		const char* sName = DasSrc_contactAt(pSrc, u, &sEmail);
+		_jb_open(&b, "{");
+		_jb_key(&b, "name");  _jb_str(&b, sName);
+		_jb_key(&b, "email"); _jb_strOrNull(&b, sEmail);
+		_jb_raw(&b, "}");
+	}
+	_jb_raw(&b, "]");
+
+	_jb_key(&b, "examples");  _jb_open(&b, "[");
+	for(size_t u = 0; u < DasSrc_numExamples(pSrc); ++u) _jb_str(&b, DasSrc_exampleLblAt(pSrc, u));
+	_jb_raw(&b, "]");
+
+	/* Presentation order, empty sections left out */
+	_jb_key(&b, "sections");  _jb_open(&b, "[");
+	for(int sec = 0; sec < DASSRCSEC_SIZE; ++sec){
+		size_t uGroups = DasSrc_numGroups(pSrc, (das_srcsec)sec);
+		if(uGroups == 0) continue;
+		_jb_open(&b, "{");
+		_jb_key(&b, "name");   _jb_str(&b, _srcsec_tok((das_srcsec)sec));
+		_jb_key(&b, "groups"); _jb_open(&b, "[");
+		for(size_t u = 0; u < uGroups; ++u)
+			_jb_srcGroup(&b, DasSrc_groupAt(pSrc, (das_srcsec)sec, u));
+		_jb_raw(&b, "]");
+		_jb_raw(&b, "}");
+	}
+	_jb_raw(&b, "]");
+	_jb_raw(&b, "}");
+
+	if(b.err){ free(b.s); return NULL; }
+	return b.s;
+}
+
+static const char* _reqverdict_tok(das_reqverdict v)
+{
+	switch(v){
+	case DASREQVERDICT_OK:  return "ok";
+	case DASREQVERDICT_BAD: return "bad";
+	default:                return "unchecked";
+	}
+}
+
+char* daswasm_req_json(const DasReq* pReq)
+{
+	if(pReq == NULL) return NULL;
+	JBuf b = {NULL, 0, 0, 0};
+
+	_jb_open(&b, "{");
+	_jb_key(&b, "label");   _jb_str(&b, DasReq_label(pReq));
+	_jb_key(&b, "entries"); _jb_open(&b, "[");
+	for(size_t u = 0; u < DasReq_numKeys(pReq); ++u){
+		_jb_open(&b, "{");
+		_jb_key(&b, "key");     _jb_str(&b, DasReq_keyAt(pReq, u));
+		_jb_key(&b, "value");   _jb_str(&b, DasReq_valAt(pReq, u));
+		_jb_key(&b, "verdict"); _jb_str(&b, _reqverdict_tok(DasReq_verdictAt(pReq, u)));
+		_jb_key(&b, "why");     _jb_str(&b, DasReq_whyAt(pReq, u));
+		_jb_key(&b, "derived"); _jb_bool(&b, DasReq_isDerivedAt(pReq, u));
+		_jb_raw(&b, "}");
+	}
+	_jb_raw(&b, "]");
+	_jb_key(&b, "raw");     _jb_open(&b, "[");
+	for(size_t u = 0; u < DasReq_numRaw(pReq); ++u){
+		const char* sVal = NULL;
+		const char* sName = DasReq_rawAt(pReq, u, &sVal);
+		_jb_open(&b, "{");
+		_jb_key(&b, "name");  _jb_str(&b, sName);
+		_jb_key(&b, "value"); _jb_str(&b, sVal);
+		_jb_raw(&b, "}");
+	}
+	_jb_raw(&b, "]");
 	_jb_raw(&b, "}");
 
 	if(b.err){ free(b.s); return NULL; }

@@ -45,8 +45,8 @@
  *   - daswasm_var_ary() lends a pointer, never free it.
  *   - daswasm_var_qube() allocates, release with daswasm_ary_free().
  *   - daswasm_ary_times(), daswasm_ary_doubles(), daswasm_ds_json(),
- *     daswasm_desc_json() and daswasm_node_json() allocate, release with
- *     daswasm_free().
+ *     daswasm_desc_json(), daswasm_node_json(), daswasm_src_json() and
+ *     daswasm_req_json() allocate, release with daswasm_free().
  *   - Catalog nodes belong to the tree they were loaded into, see
  *     das3/node.h.
  *   - Everything reachable from DasWasmRdr_stream() belongs to the reader
@@ -542,6 +542,76 @@ DAS_WASM_API char* daswasm_desc_json(const DasDesc* pDesc);
  * @memberof DasNode
  */
 DAS_WASM_API char* daswasm_node_json(const DasNode* pNode);
+
+/* ************************************************************************ */
+/* Data sources
+ *
+ * Everything a form needs to ask a data source for data.  das2C reads the
+ * source's interface definition, in either of the catalog layouts in use,
+ * so this is the same for every source and every catalog age.
+ */
+
+/** A data source's form model as one JSON document.
+ *
+ * A source does not change once loaded, so a caller takes this once and
+ * draws a form from it.  Groups and properties come in the order the
+ * source lists them, sections in presentation order.
+ *
+ *   source   ptr, kind ("stream"), path, url, name, title, version,
+ *            needsAuth, authRealm, contacts, examples, sections
+ *   contact  name, email
+ *   examples labels, by index, see new_DasReq_src()
+ *   section  name ("coords"|"data"|"formats"|"options"), groups
+ *   group    name, label, title, enable, xorGroup, mimes, props
+ *   prop     key, name, label, title, type, typeName, units, value, ctrl
+ *   ctrl     param, required, choices, range
+ *   choice   value, label
+ *
+ *   enable    the key of the group's on/off property, null when it has none
+ *   xorGroup  name of the exclusive set the enable toggle is in, so radio
+ *             buttons rather than check boxes; null when not in one
+ *   mimes     media types a format group produces
+ *   key       the property's name in requisitions, "coords.time.min"
+ *   label     short caption, null when the node gives none
+ *   title     longer description, composed by das2C when the node has
+ *             none, "" for an option with nothing to say
+ *   type      "text", "boolean", "integer", "real", "time" or "enum"
+ *   value     the default, or for a fixed property its value; null for
+ *             none, which on a required control means the user must give one
+ *   ctrl      how the property may be set, null for a fixed one
+ *   param     the server parameter it feeds
+ *   range     [low, high], either end null when unstated; null for no range.
+ *             A time range end may be "now".
+ *   choices   the allowed values for an enum, label null when the node
+ *             gives only values
+ *
+ * Absent strings are null; empty ones are "".
+ *
+ * @returns a NUL terminated UTF-8 string the caller frees with
+ *          daswasm_free(), or NULL on error (see daswasm_lastError)
+ * @memberof DasSrc
+ */
+DAS_WASM_API char* daswasm_src_json(const DasSrc* pSrc);
+
+/** A requisition's entries as one JSON document, with the verdicts the
+ * last DasSrc_check() gave them.
+ *
+ *   req      label, entries, raw
+ *   entry    key, value, verdict ("unchecked"|"ok"|"bad"), why, derived
+ *   raw      name, value
+ *
+ *   key      as it was set, any spelling das2C accepts, see das3/source.h
+ *   why      the reason for a "bad" verdict, meant to be shown as is; ""
+ *            otherwise
+ *   derived  true for entries a check added, such as the min and max a
+ *            "time" range expanded to
+ *   raw      server parameters set directly, bypassing the interface
+ *
+ * @returns a NUL terminated UTF-8 string the caller frees with
+ *          daswasm_free(), or NULL on error (see daswasm_lastError)
+ * @memberof DasReq
+ */
+DAS_WASM_API char* daswasm_req_json(const DasReq* pReq);
 
 /** @} */
 
