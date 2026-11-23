@@ -1,9 +1,10 @@
-/* Live check against a public dasFlex server: the first time the module
+/* Live check against a public das server: the first time the module
  * meets a real network response rather than a fixture served by the test
- * runner.  What this adds over TestModule: cross-origin fetch under CORS,
- * chunk sizes chosen by the network stack, a server-side error response
- * with its in-band exception message, and a das2 stream big enough to see
- * mid-download growth.
+ * runner.  What this adds over TestModule: the request found through the
+ * live catalog, walked from the compiled in root (das2.org's index.json),
+ * cross-origin fetch under CORS, chunk sizes chosen by the network stack,
+ * a server-side error response with its in-band exception message, and a
+ * das2 stream big enough to see mid-download growth.
  *
  * Not part of `make headless_test` since it needs a server: `make
  * live_test` for the public one over the network, `make local_test` for the
@@ -48,38 +49,67 @@ async function done()
 
 /* Which server: the page URL's ?server= picks one.
  *
- * iowa (default): Juno Waves survey spectra on space.physics.uiowa.edu.  The
- *   source says data older than six months are anonymous and the server
- *   sends Access-Control-Allow-Origin: *, so this works from any origin.
- *   Two hours at 86.4 s bins is about 54 KB.
+ * iowa (default): Juno Waves survey spectra, the das2 source of the
+ *   catalog's Juno survey SourceSet, which jupiter.physics.uiowa.edu serves
+ *   first.  The request URL comes from walking the live catalog down from
+ *   the root, not from this file.  Data older than six months are
+ *   anonymous and the server sends Access-Control-Allow-Origin: * on data
+ *   replies, so this works from any origin.  Two hours at 86.4 s bins is
+ *   about 76 KB.
  * local: the dasFlex checkout next door through test/dasflex_cgi.py, whose
  *   port the runner passes as ?port=.  Its Examples/Spectra source is the
  *   Voyager 1 PWS fixture; one minute at 10 s bins is about 23 KB.
  *
- * In both cases BAD asks the das2_bin_avgsec pipeline for das3 output,
- * which dasFlex refuses with HTTP 400 plus an exception packet. */
+ * BAD asks for something the server refuses with an exception packet:
+ * for iowa a dataset that does not exist (HTTP 400), for local das3
+ * output from the das2_bin_avgsec pipeline (HTTP 400). */
 const params = new URLSearchParams(location.search);
 const SERVERS = {
 	iowa: {
-		src: 'https://space.physics.uiowa.edu/das/stream/source/juno/wav/survey/flex',
-		query: '?read.time.min=2018-10-02T11:00&read.time.max=2018-10-02T13:00&bin.time.max=86.4',
+		node: 'tag:das2.org,2012:site:/uiowa/juno/wav/survey',
+		child: 'das2',
+		settings: {'time.min': '2018-10-02T11:00', 'time.max': '2018-10-02T13:00', 'time.res': '86.4'},
+		bad: url => url.replace('dataset=Juno/WAV/Survey', 'dataset=Juno/WAV/NoSuchDataset'),
+		badWhat: 'a dataset the server does not have',
 		minRecs: 10, year: [1.8e9, 2.0e9],   /* 2018 in seconds since 1958 */
 	},
 	local: {
 		src: `http://127.0.0.1:${params.get('port')}/das/server/source/examples/spectra/flex`,
 		query: '?read.time.min=1979-03-01T12:26:11&read.time.max=1979-03-01T12:27:00&bin.time.max=10',
+		bad: url => url + '&format.version=3',
+		badWhat: 'format.version=3 on a das2-only source',
 		minRecs: 3, year: [6.6e8, 7.0e8],    /* 1979 */
 	},
 };
 const which = params.get('server') || 'iowa';
 const SRV = SERVERS[which];
-const GOOD = SRV.src + SRV.query;
-const BAD = GOOD + '&format.version=3';
+
+/* The request for a catalog server: walk from the compiled in root to the
+ * SourceSet, take the named child (a SourceSet may list several servers'
+ * sources; the one wanted is named, not the first loadable), and let das2C
+ * build the URL from the node */
+async function goodUrl(d)
+{
+	if(!SRV.node) return SRV.src + SRV.query;
+	const cat = d.newCatalog();
+	try{
+		const set = await cat.resolve(SRV.node);
+		const node = await set.child(SRV.child);
+		check(node.isSource, `${node.uri}: a ${node.kind}, not a source`);
+		log(`INFO: walked from the compiled in root to ${node.uri} (${node.url})`);
+		const src = node.source();
+		try{ return src.request(-1, SRV.settings).url; }
+		finally{ src.free(); }
+	}
+	finally{ cat.free(); }
+}
 
 async function main()
 {
 	const d = await load({progName: 'TestLive'});
-	log(`INFO: server '${which}': ${SRV.src}`);
+	const GOOD = await goodUrl(d);
+	const BAD = SRV.bad(GOOD);
+	log(`INFO: server '${which}': ${GOOD}`);
 
 	let nChunks = 0, nBytes = 0, grew = false, lastRecs = 0;
 	const t0 = performance.now();
@@ -135,7 +165,7 @@ async function main()
 	 * on its error replies too; dasFlex does.  A server without them makes
 	 * the browser hide the body, so the missing text is reported as a
 	 * WARNING, not failed on. */
-	log('INFO: now a deliberately bad request (format.version=3 on a das2-only source)');
+	log(`INFO: now a deliberately bad request (${SRV.badWhat})`);
 	let threw = false;
 	try{ await d.fetchStream(BAD); }
 	catch(e){

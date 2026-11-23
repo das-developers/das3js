@@ -458,7 +458,10 @@ async function selfCheck()
  * its example button, press Plot, wait for the run.  exLabel null takes
  * the first example.  minLit is the share of the canvas that must be
  * painted brighter than the background.  Returns the run's result. */
-async function plotExample(node, exLabel, minLit)
+/* change, if given, adjusts the example before plotting: property
+ * spellings to values, {'time.res': '60'}, looked up through the source
+ * since full keys follow each node's own spelling */
+async function plotExample(node, exLabel, minLit, change = null)
 {
 	showNode(node);
 	const form = info.querySelector('das-source-form');
@@ -467,6 +470,15 @@ async function plotExample(node, exLabel, minLit)
 	const ex = exLabel ? exs.find(b => b.textContent === exLabel) : exs[0];
 	if(!ex) throw new Error(`${node.uri}: no example '${exLabel ?? 'any'}'`);
 	ex.click();
+	if(change){
+		const set = {...form.settings};
+		for(const [k, v] of Object.entries(change)){
+			const key = form.source.key(k);
+			if(key === null) throw new Error(`${node.uri}: no property '${k}'`);
+			set[key] = v;
+		}
+		form.settings = set;
+	}
 	const draw = [...info.querySelectorAll('[slot=actions] button')].find(b => b.textContent === 'Plot');
 	if(!draw || draw.disabled) throw new Error(`${node.uri}: Plot button missing or off`);
 
@@ -582,8 +594,12 @@ const LIVE_PLOTS = [
 	/* Perijove 16 at the example's 86.4 s, about 1.75 MB; 83 MB at full
 	 * resolution if the resolution parameter goes missing */
 	['tag:das2.org,2012:site:/uiowa/juno/wav/survey', 'Perijove 16'],
-	/* Key parameter grid, E field: flybys show in the radio emissions */
-	['tag:das2.org,2012:site:/uiowa/cassini/rpws/survey_grid', null],
+	/* Voyager 1 wideband spectra, closest approach to Jupiter, from the
+	 * 4-bit waveform receiver.  The example asks for 43.2 s, just under the
+	 * server's 60 s cache, so it gets the 6 s one: 10 MB.  At 60 s it is
+	 * 1.9 MB in well under a second. */
+	['tag:das2.org,2012:site:/uiowa/voyager/1/pws/uncalibrated/highrate_spectrogram',
+	 'Jupiter Encounter', {'time.res': '60'}],
 ];
 
 async function liveCheck()
@@ -591,14 +607,14 @@ async function liveCheck()
 	/* The page opens the live root after starting this; wait for it */
 	await next('das-open');
 	const out = [];
-	for(const [uri, exLabel] of LIVE_PLOTS){
+	for(const [uri, exLabel, change] of LIVE_PLOTS){
 		let node = await cat.resolve(uri);
 		if(!node.isSource){
 			const k = node.children.find(c => c.loadable);
 			if(!k) throw new Error(`${uri}: nothing loadable in a ${node.kind}`);
 			node = await node.child(k.name);
 		}
-		const r = await plotExample(node, exLabel, 0.25);
+		const r = await plotExample(node, exLabel, 0.25, change);
 		/* Pan back a quarter: only that quarter is requested, and the
 		 * picture stays about as full */
 		const p = await dragPlot(0.25);

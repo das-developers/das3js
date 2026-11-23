@@ -44,7 +44,7 @@
 #
 # make live_test  Run in a headless browser, but against the live servers:
 #                 the dasFlex server at space.physics.uiowa.edu, then plots
-#                 of Juno and Cassini examples found through the catalog
+#                 of Juno and Voyager examples found through the catalog
 #                 (jupiter and planet.physics.uiowa.edu)
 #
 # make pack       Write the npm package, build.wasm32/das3js-VERSION.tgz,

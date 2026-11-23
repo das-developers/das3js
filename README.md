@@ -93,7 +93,7 @@ attributes and the events.  The form never fetches; it hands the page a
 checked request URL.
 
 The package is three files that must stay together: `das3js.mjs`, its
-loader `das2c.mjs`, and the compiled library `das2c.wasm`, about 225 KB
+loader `das2c.mjs`, and the compiled library `das2c.wasm`, about 235 KB
 over the wire.  The loader finds the `.wasm` beside itself, and the
 common setups below handle that with no configuration.  If yours moves
 the `.wasm` somewhere else, tell `load()` where:
@@ -148,7 +148,7 @@ an import map:
 
 ```html
 <script type="importmap">
-{"imports": {"das3js": "https://cdn.jsdelivr.net/npm/das3js@0.1/build.wasm32/das3js.mjs"}}
+{"imports": {"das3js": "https://cdn.jsdelivr.net/npm/das3js@0.2/build.wasm32/das3js.mjs"}}
 </script>
 <script type="module">
 import {load} from 'das3js';
@@ -171,19 +171,42 @@ the setups above and runs them in headless Firefox; see
 
 Like the other das2C bindings (das2py, das2dlm), this project statically
 compiles in a selected das2C version, rather than depending on shared
-objects.  The current pin is das2C master at 6a9ba9e, v3.0.4 plus a fix
-for catalog option flags.  `notes/build.md` covers the toolchain, the
-build and the tests; `git submodule update --init` fetches the pinned
-sources.
+objects.  The current pin is das2C v3.0.6, a git submodule.
+
+You need GNU make, emscripten through emsdk (6.0.13, the version das2C's
+CI pins, which wants Python 3.10 or newer), network access for the first
+build, and Firefox for the browser tests.  Then:
+
+    git clone --recurse-submodules https://github.com/das-developers/das3js.git
+    cd das3js
+    source /path/to/emsdk/emsdk_env.sh
+    make                  # the module in build.wasm32/, and the test programs
+    make test             # the C layer under Node
+    make headless_test    # the module in headless Firefox
+    make pack             # the npm tarball, build.wasm32/das3js-VERSION.tgz
+
+The first `make` downloads expat and FFTW, checks them against pinned
+SHA-256 sums and builds them for wasm32, and emscripten fetches its zlib
+port.  That takes several minutes; later builds take seconds.
+`make help` lists every target.  [notes/build.md](notes/build.md) has the
+details: installing emsdk, the Python workaround for older systems, the
+live and npm consumer tests, the local test server, and deploying the
+test pages.
 
 ## History
 
 Das was invented by Larry Granroth at the University of Iowa.  He
-started das1 in 1996 and das2 in 2002, and hired the developers who
-built them.  Chris Piker developed das3 from 2016 on, consulting
-Granroth on the design throughout, and completed it with version 3.0 of
-das2C in 2026.  Das3js brings that line of work to back to web browsers
-where it began.
+started das1 in 1996 as a plot generation service built on Perl CGI
+scripts and IDL.  In 2002 he hired E. West and J. Faden to give das
+publication-quality interactive plots.  The resulting das2 system was
+built in Java, and as browser support for Java web apps dwindled, it came
+to run mostly on the desktop.  The das2 graphics engine lives on in
+das2java, which is actively maintained and forms the core of Autoplot.
+C. Piker developed das3 from 2016 on to handle the stream types das2 does
+not support, consulting Granroth on the design throughout.  Das3 tools
+are the primary components supporting the TRACERS Science Operations Center
+(SOC).  Das3js, part of the das3 family, brings das back to web browsers,
+where it all began.
 
 ## License
 

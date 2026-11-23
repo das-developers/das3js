@@ -46,18 +46,18 @@ five times larger, so rebuild without it before deploying.
 ## Test
 
 Each target builds what it needs.  ERROR lines inside a run are expected
-when the run says they are intentional.  These are negative tests than 
+when the run says they are intentional.  These are negative tests that 
 are supposed to fail.  The trailing success line is the final verdict.
-The command below are provided in run order, and when working only on
+The commands below are in run order, and when working only on
 das3js code, you can skip the `deps` rows.  Browser tests assume you have 
 firefox on your machine.
 
 | Command              | What it runs                                  | Success line                                      |
 |----------------------|-----------------------------------------------|---------------------------------------------------|
 | `make deps_test`     | das2C's test suite as wasm under Node         | `All wasm test programs completed without errors` |
-| `make test`          | the C glue test as wasm under Node            | `All Foreign function layer checks passed`        |
+| `make test`          | the C glue and renderer tests, wasm in Node   | `All FFI layer checks passed`, `All render checks passed` |
 | `make headless_test` | the module in headless Firefox, fixtures      | `All module checks passed`                        |
-| `make live_test`     | same, against space.physics.uiowa.edu         | `All live checks passed`                          |
+| `make live_test`     | same, against the live servers, catalog plots | `All live checks passed`, then `page reported success` |
 | `make local_test`    | same, against the dasFlex checkout next door  | `All live checks passed`                          |
 | `make pack_test`     | the npm package in Vite, webpack, plain page  | `page reported success`, once per run (four)      |
 
@@ -70,7 +70,7 @@ To use the pages in your own browser instead, run:
 ```bash
 make server
 ```
-and load the URL it that it prints. On Linux, Ctrl-C stops the test sever.  
+and load the URL that it prints. On Linux, Ctrl-C stops the test server.  
 Your browser should open to an index of the test pages and two tools:
 
 * **Structure inspector:** give it any stream URL and it prints every
@@ -115,7 +115,7 @@ directory `test/npm/` holds one small project for three common setups:
   * `importmap/` - a plain page with no build tools, as a content 
     delivery network (CDN) user would write it
 
-Each loads das2C's `example/ex08_cassini_rpws_survey.d2t` and passes if
+Each loads das2C's `examples/ex08_cassini_rpws_survey.d2t` and passes if
 all 13 datasets in that stream parse.
 
 `make pack_test` packs, installs the tarball into each project, builds
@@ -158,7 +158,7 @@ No matter the options, the examples under `/das2C/` are reachable.
 Note: before a dev server run you can issue `rm -rf test/npm/vite/node_modules/.vite` 
 to make Vite pre-bundle das3js from scratch, as `make pack_test` does.
 
-To observe the tests, add Add `--serve` to any of the four to watch the
+To observe the tests, add `--serve` to any of the four to watch the
 page in your own browser instead: it prints the URL, the devtools network
 tab shows where `das2c.wasm` came from, and Ctrl-C stops it.
 
