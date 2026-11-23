@@ -180,6 +180,7 @@ export class DasRuntime {
 			/* the raster painter, src/render.h */
 			newRen:        f('new_DasRender', N, [N, N]),
 			renSetX:       f('DasRender_setX', N, [N, S, S]),
+			renPan:        f('DasRender_pan', N, [N, N]),
 			renAttach:     f('DasRender_attach', N, [N, N]),
 			renKind:       w('DasRender_kind', N, [N]),
 			renColorize:   w('DasRender_colorize', N, [N]),
@@ -230,6 +231,9 @@ export class DasRuntime {
 			/* A failed check is a normal answer, explained per entry by
 			 * reqJson, so it doesn't go through f() and lastError() */
 			srcCheck:      w('DasSrc_check', N, [N, N, N]),
+			/* No match is a normal answer too, and das2C logs nothing for it */
+			srcFindProp:   w('DasSrc_findProp', N, [N, S, N, N]),
+			propKey:       w('DasSrcProp_key', S, [N]),
 		};
 
 		this.#c.init(progName);
@@ -356,6 +360,9 @@ export class DasRuntime {
 	 * @param {object} [opts]
 	 * @param {AbortSignal} [opts.signal] Cancels the fetch
 	 * @param {object} [opts.headers] Extra request headers (Authorization...)
+	 * @param {function} [opts.onReader] Called once with the reader before
+	 *        the first chunk is fed: where a DasRender attaches.  The
+	 *        reader is freed before fetchStream returns or throws.
 	 * @param {function} [opts.onChunk] Called as (reader, bytesSoFar) after
 	 *        every chunk is parsed.  The reader's stream() may be walked.
 	 * @returns {Promise<DasStream>} the completed stream, which the caller
@@ -388,6 +395,7 @@ export class DasRuntime {
 		const rdr = this.newReader();
 		let nBytes = 0;
 		try{
+			if(opts.onReader) opts.onReader(rdr);
 			const body = resp.body.getReader();
 			for(;;){
 				const {done, value} = await body.read();
@@ -641,6 +649,20 @@ export class DasRender {
 	setX(beg, end)
 	{
 		if(this.#d._c().renSetX(this.#p, String(beg), String(end)) !== 0)
+			throw new DasError(this.#d.lastError());
+	}
+
+	/** Slide the picture sideways by whole pixels, between streams.
+	 *
+	 * Positive moves the data right, exposing earlier time on the left;
+	 * the time range moves with it.  The vacated columns are empty: fetch
+	 * the exposed span and attach() its reader to fill them.  Only after
+	 * the previous reader is freed (fetchStream() frees it before it
+	 * returns).  From the first pan on, the vertical and color ranges stay
+	 * fixed so old and new columns share one scale; see render.h. */
+	pan(px)
+	{
+		if(this.#d._c().renPan(this.#p, Math.round(px)) !== 0)
 			throw new DasError(this.#d.lastError());
 	}
 
@@ -1936,6 +1958,27 @@ export class DasCatSource {
 			if(pBad) m._free(pBad);
 			c.reqDel(req);
 		}
+	}
+
+	/** The full key das2C files a property under, from any spelling it
+	 * accepts for one.
+	 *
+	 * Keys follow the node's own spelling, so the time range of a 2018
+	 * node is coords.time.minimum and of a current one coords.time.min.
+	 * Look keys up through this rather than comparing strings:
+	 *
+	 *   const k = src.key('time.min');      // either of the above
+	 *   const t0 = res.entries.find(e => e.key === k)?.value;
+	 *
+	 * @param {string} spelling "time.min", "coords.time.minimum", "time" ...
+	 * @returns {string|null} null when nothing matches, or more than one
+	 *        property does
+	 */
+	key(spelling)
+	{
+		const c = this.#d._c();
+		const p = c.srcFindProp(this.#p, String(spelling), 0, 0);
+		return (p === 0) ? null : c.propKey(p);
 	}
 
 	/* A requisition from an example (or blank) with settings applied, or a

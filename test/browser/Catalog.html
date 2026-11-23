@@ -27,7 +27,11 @@
 		padding: 0.6em 0.8em;
 		min-height: 10em;
 	}
-	#tree { max-height: 75vh; overflow: auto; }
+	/* The tree fills its row, as tall as the details beside it, and
+	 * scrolls.  contain: size leaves its content out of the row height,
+	 * so a long listing scrolls instead of stretching the row. */
+	#tree { align-self: stretch; contain: size; min-height: 24em; overflow: auto; }
+	@media (max-width: 760px) { #tree { contain: none; max-height: 60vh; } }
 
 	/* The tree element draws in its own shadow root; these custom
 	 * properties are how a page themes it, see src/das-catalog-tree.mjs */
@@ -51,6 +55,27 @@
 	#info .uri { color: var(--muted); font-size: 0.85em; margin: -0.2em 0 0.6em; overflow-wrap: anywhere; }
 	#info dl.foot { font-size: 0.85em; color: var(--muted); margin-top: 1.2em; }
 	#info .placeholder { color: var(--muted); opacity: 0.7; text-align: center; margin-top: 3em; }
+
+	/* The quick look, full width under the panes, see QuickPlot.mjs.  The
+	 * canvas reads its tick and frame colors from the two custom
+	 * properties. */
+	#plot { margin-top: 16px; min-height: 0; --qp-ink: var(--muted); --qp-line: var(--line); }
+	.qp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1em; }
+	.qp-title { margin: 0.2em 0 0.1em; font-size: 1.05em; color: var(--text); }
+	.qp-range { color: var(--muted); font-size: 0.85em; margin: 0 0 0.6em; }
+	.qp-canvas { display: block; }
+	.qp-status, .qp-caption { color: var(--muted); font-size: 0.85em; margin: 0.3em 0; }
+	.qp-msg {
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		background: var(--code);
+		padding: 0.5em 0.8em;
+		margin: 0.6em 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.qp-err { border-color: var(--err); color: var(--err); }
+	.qp-stop { border-color: var(--err); color: var(--err); }
 
 	#info h3 { margin: 0.2em 0 0.4em; font-size: 1.15em; color: var(--text); }
 	#info dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2em 0.8em; margin: 0.6em 0; }
@@ -85,6 +110,7 @@ data requests still go to the live servers.</p>
 	<das-catalog-tree class="pane" id="tree"></das-catalog-tree>
 	<div class="pane" id="info"></div>
 </div>
+<section class="pane" id="plot" hidden></section>
 </main>
 <script type="module" src="./Catalog.mjs"></script>
 </body>

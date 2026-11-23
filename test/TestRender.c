@@ -2,8 +2,9 @@
  *
  * Paints das2C example streams the way the perf page does: a reader with a
  * renderer attached, fed in chunks.  Checks are structural (picture kind,
- * what got painted where) plus one consistency check: a spectrogram
- * painted incrementally must match one repainted from the finished stream.
+ * what got painted where) plus consistency checks: a spectrogram painted
+ * in small chunks must match one painted in large chunks, and a panned
+ * one painted again from the same stream must match the moved image.
  *
  * Run from the das2C checkout so the example paths resolve.  Give a
  * directory as the first argument to also write each image there as a
@@ -41,19 +42,16 @@
 static const char* g_sOutDir = NULL;
 static bool g_bLenient = false;   /* a truncated file is fine, see main */
 
-/* Read a whole file through a reader with a renderer attached.  The
- * renderer is returned; the reader is freed first, as render.h asks. */
-static DasRender* paintFile(
-	const char* sPath, const char* sBeg, const char* sEnd, size_t uChunk
-){
+/* Read a whole file through a new reader attached to pRen, then free the
+ * reader, as render.h asks.  Returns false on a parse failure. */
+static bool feedFile(DasRender* pRen, const char* sPath, size_t uChunk)
+{
 	FILE* pFile = fopen(sPath, "rb");
 	if(pFile == NULL){
 		printf("ERROR: Couldn't open %s\n", sPath);
-		return NULL;
+		return false;
 	}
 	DasWasmRdr* pRdr = new_DasWasmRdr();
-	DasRender* pRen = new_DasRender(WIDTH, HEIGHT);
-	DasRender_setX(pRen, sBeg, sEnd);
 	DasRender_attach(pRen, pRdr);
 
 	static uint8_t aBuf[65536];
@@ -75,10 +73,38 @@ static DasRender* paintFile(
 
 	if(nRet != 0){
 		printf("ERROR: %s failed to parse: %s\n", sPath, daswasm_lastError());
+		return false;
+	}
+	return true;
+}
+
+/* A new renderer over [sBeg, sEnd) with the whole file painted */
+static DasRender* paintFile(
+	const char* sPath, const char* sBeg, const char* sEnd, size_t uChunk
+){
+	DasRender* pRen = new_DasRender(WIDTH, HEIGHT);
+	DasRender_setX(pRen, sBeg, sEnd);
+	if(!feedFile(pRen, sPath, uChunk)){
 		del_DasRender(pRen);
 		return NULL;
 	}
 	return pRen;
+}
+
+/* Pixels of image B that differ from image A moved nPx columns, counting
+ * columns A has no counterpart for as "should be black" */
+static size_t shiftDiffs(const uint8_t* pA, const uint8_t* pB, int nPx)
+{
+	static const uint8_t aBlack[4] = {0, 0, 0, 255};
+	size_t uBad = 0;
+	for(int r = 0; r < HEIGHT; ++r){
+		for(int c = 0; c < WIDTH; ++c){
+			int cA = c - nPx;
+			const uint8_t* pExp = ((cA < 0)||(cA >= WIDTH)) ? aBlack : pA + ((size_t)r*WIDTH + cA)*4;
+			if(memcmp(pExp, pB + ((size_t)r*WIDTH + c)*4, 4) != 0) ++uBad;
+		}
+	}
+	return uBad;
 }
 
 /* Count of columns with at least one non-black pixel, and the last one */
@@ -182,6 +208,46 @@ int main(int argc, char** argv)
 	CHECK((nLast > WIDTH/2 - 4)&&(nLast < WIDTH/2 + 1), "no paint past the last record");
 	del_DasRender(pRen);
 
+	/* Pan: the grid moves whole columns and the time range with it, so
+	 * painting the same stream again after a pan must land every record
+	 * in the column it was moved to.  200 px of 800 is 75 s exactly. */
+	pRen = paintFile(sSurvey, sSBeg, sSEnd, 997);
+	CHECK(pRen != NULL, "pan survey read");
+	size_t uImg = (size_t)WIDTH*HEIGHT*4;
+	uint8_t* pBefore = (uint8_t*)malloc(uImg);
+	memcpy(pBefore, DasRender_colorize(pRen), uImg);
+	double rZMin = DasRender_range(pRen, 1, 0), rZMax = DasRender_range(pRen, 1, 1);
+
+	CHECK(DasRender_pan(pRen, 200) == 0, "pan right");
+	CHECK(DasRender_dirty(pRen), "pan marks the image dirty");
+	pRgba = DasRender_colorize(pRen);
+	CHECK(shiftDiffs(pBefore, pRgba, 200) == 0, "pan right moves the image 200 columns");
+	CHECK(DasRender_range(pRen, 1, 0) == rZMin && DasRender_range(pRen, 1, 1) == rZMax,
+		"pan keeps the color range");
+	CHECK(DasRender_setX(pRen, sSBeg, sSEnd) != 0, "x range refused after a pan");
+
+	/* The new window starts 75 s before the data, so the re-feed adds
+	 * nothing to the left 200 columns and repeats the rest */
+	CHECK(feedFile(pRen, sSurvey, 4093), "pan survey re-feed");
+	CHECK(DasRender_skipped(pRen) == 0, "re-fed datasets match the first stream's");
+	pRgba = DasRender_colorize(pRen);
+	size_t uBad = shiftDiffs(pBefore, pRgba, 200);
+	printf("INFO: pan: %zu pixels differ after the re-feed\n", uBad);
+	CHECK(uBad == 0, "re-fed records land where the pan moved them");
+	writePpm("survey_pan", pRgba);
+
+	/* Back the other way, further: the right 400 columns come up empty,
+	 * not with what the first pan pushed off the edge */
+	memcpy(pBefore, pRgba, uImg);
+	CHECK(DasRender_pan(pRen, -400) == 0, "pan left");
+	pRgba = DasRender_colorize(pRen);
+	CHECK(shiftDiffs(pBefore, pRgba, -400) == 0, "pan left moves the image 400 columns");
+	CHECK(DasRender_pan(pRen, WIDTH * 3) == 0, "pan far");
+	pRgba = DasRender_colorize(pRen);
+	CHECK(paintedCols(pRgba, &nLast) == 0, "a pan wider than the image clears it");
+	free(pBefore);
+	del_DasRender(pRen);
+
 	/* 2. Voyager peaks: spectrogram with no scaleType, so linear axes */
 	pRen = paintFile("examples/ex05_vgr_pws_sa_peaks.d2s", "2014-04-02", "2014-04-12", 4096);
 	CHECK(pRen != NULL, "voyager read");
@@ -222,6 +288,19 @@ int main(int argc, char** argv)
 	printf("INFO: waveform: %d of %d columns painted\n", nCols, WIDTH);
 	CHECK(nCols > 0, "waveform painted something");
 	writePpm("waveform", pRgba);
+	del_DasRender(pRen);
+
+	/* Density pan: counts move too, and the color scale follows the
+	 * counts that are left */
+	pRen = paintFile("examples/ex18_juno_waves_wfrm.d3b",
+		"2013-10-09T15:30:59.875", "2013-10-09T15:33:00.124", 997);
+	CHECK(pRen != NULL, "waveform pan read");
+	DasRender_colorize(pRen);
+	int nBefore = paintedCols(DasRender_colorize(pRen), &nLast);
+	CHECK(DasRender_pan(pRen, -WIDTH/2) == 0, "waveform pan");
+	nCols = paintedCols(DasRender_colorize(pRen), &nLast);
+	printf("INFO: waveform pan: %d columns painted, %d before\n", nCols, nBefore);
+	CHECK((nCols > 0)&&(nCols < nBefore)&&(nLast < WIDTH/2), "waveform pan moved the counts left");
 	del_DasRender(pRen);
 
 	/* 4. Ragged Cassini waveforms: a different length per record */

@@ -176,6 +176,15 @@ for catalog option flags.  `notes/build.md` covers the toolchain, the
 build and the tests; `git submodule update --init` fetches the pinned
 sources.
 
+## History
+
+Das was invented by Larry Granroth at the University of Iowa.  He
+started das1 in 1996 and das2 in 2002, and hired the developers who
+built them.  Chris Piker developed das3 from 2016 on, consulting
+Granroth on the design throughout, and completed it with version 3.0 of
+das2C in 2026.  Das3js brings that line of work to back to web browsers
+where it began.
+
 ## License
 
 Das3js's own code, the JavaScript included, is MIT licensed.  The

@@ -1,0 +1,17 @@
+{
+   "type": "Catalog",
+   "version": "0.5",
+   "name": "Plot",
+   "separator": "/",
+   "title": "Hand-made test node: sources whose requests are answered by local files",
+   "catalog": {
+      "vgr_sa": {
+         "type": "HttpStreamSrc",
+         "label": "Voyager 1 SA file",
+         "title": "Voyager 1 PWS SA, one day from das2C's examples",
+         "urls": [
+            "https://local/vgr_sa_file.json"
+         ]
+      }
+   }
+}

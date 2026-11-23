@@ -39,7 +39,8 @@
  *
  *   - X: always from the caller, see DasRender_setX(), before any data
  *     arrive.  It's the time range the request asked for, so the picture
- *     fills left to right and never slides.
+ *     fills left to right and never slides while a stream paints.
+ *     Between streams DasRender_pan() moves it.
  *   - Spectrogram Y: the union of the y coordinates seen in dataset
  *     headers.  A header that widens it repaints everything retained.
  *   - Data values (spectrogram Z, density Y): always auto-ranged.  Stream
@@ -118,6 +119,28 @@ DAS_WASM_API DasRender* new_DasRender(int nWidth, int nHeight);
  * @memberof DasRender
  */
 DAS_WASM_API int DasRender_setX(DasRender* pThis, const char* sBeg, const char* sEnd);
+
+/** Slide the picture sideways between streams.
+ *
+ * Moves the painted grid nPx columns and the time range with it, by
+ * whole pixels: positive moves the data right and exposes earlier time on
+ * the left.  Vacated columns are empty.  To fill them, request the
+ * exposed span and DasRender_attach() its reader as usual; a record that
+ * also appears in the kept part lands in the column it already holds.
+ *
+ * Call only after the attached reader is freed (or will never be fed
+ * again): the renderer forgets that stream's datasets here.  It keeps
+ * everything they decided: the picture kind, the dimensions a later
+ * stream must match, and the vertical and color ranges.  From the first
+ * pan on those ranges are locked, no widening and no refit, so old and
+ * new columns share one scale.  A later stream's values outside them are
+ * clipped or not painted.  DasRender_setX() is refused after a pan.
+ *
+ * @param nPx Columns to move, any size; |nPx| >= width clears the grid
+ * @returns 0 or a positive error code (no time range set yet)
+ * @memberof DasRender
+ */
+DAS_WASM_API int DasRender_pan(DasRender* pThis, int nPx);
 
 /** Replace the color map.
  *

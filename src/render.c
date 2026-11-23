@@ -216,6 +216,7 @@ struct das_render {
 	int  nMaxCol;           /* rightmost column painted */
 	bool bNarrowDue;        /* crossed DR_NARROW_AT, refit not yet done */
 	bool bNarrowed;
+	bool bLocked;           /* panned: scales that are set stay put, see pan */
 
 	dr_ds* pDs;
 	int    nDs;
@@ -424,7 +425,14 @@ static void _spanRows(DasRender* pThis, dr_ds* pD)
 		int nMid = (int)floor((pThis->rYMax - pD->pMid[b]) / rSpan * nH);
 		int n0 = (int)floor((pThis->rYMax - pD->pHi[b]) / rSpan * nH);
 		int n1 = (int)ceil((pThis->rYMax - pD->pLo[b]) / rSpan * nH);
-		if(nMid >= nH) nMid = nH - 1;   /* the bottom edge itself */
+		/* Unlocked, the range is the union of the bin edges and no center
+		 * falls outside it.  Locked, a later stream's bins may, and those
+		 * are off the picture, not smeared into the edge row. */
+		if((nMid < 0)||(nMid > nH)){
+			pD->pRow0[b] = pD->pRow1[b] = 0;
+			continue;
+		}
+		if(nMid == nH) nMid = nH - 1;   /* the bottom edge itself */
 		if(n0 < nMid - DR_SPAN_CAP) n0 = nMid - DR_SPAN_CAP;
 		if(n1 > nMid + DR_SPAN_CAP + 1) n1 = nMid + DR_SPAN_CAP + 1;
 		if(n0 > nMid) n0 = nMid;
@@ -909,6 +917,7 @@ static bool _spectroZCheck(DasRender* pThis)
 		if((f < pThis->rZMin)||(f > pThis->rZMax)) ++nOut;
 	}
 	if(nPainted == 0) return false;
+	if(pThis->bLocked && pThis->bZSet) return true;
 
 	_checkNarrow(pThis);
 
@@ -1154,7 +1163,8 @@ static das_errcode _onDsDesc(DasDs* pDs, int nPktId, void* pUser)
 			if(pD->pLo[b] < rLo) rLo = pD->pLo[b];
 			if(pD->pHi[b] > rHi) rHi = pD->pHi[b];
 		}
-		if(!pThis->bYSet || (rLo < pThis->rYMin) || (rHi > pThis->rYMax)){
+		bool bWiden = (rLo < pThis->rYMin) || (rHi > pThis->rYMax);
+		if(!pThis->bYSet || (bWiden && !pThis->bLocked)){
 			bool bHadData = pThis->bYSet;
 			if(!pThis->bYSet || (rLo < pThis->rYMin)) pThis->rYMin = rLo;
 			if(!pThis->bYSet || (rHi > pThis->rYMax)) pThis->rYMax = rHi;
@@ -1205,7 +1215,7 @@ static das_errcode _onDsData(DasDs* pDs, int nPktId, void* pUser)
 			else _paintDensity(pThis, pD, r);
 		}
 		pD->nPainted = (int)nRecs;
-		if(pThis->nKind == DASRENDER_DENSITY) _densityCheck(pThis);
+		if((pThis->nKind == DASRENDER_DENSITY) && !pThis->bLocked) _densityCheck(pThis);
 	}
 
 	pThis->rPaintMs += _now_ms() - t0;
@@ -1239,7 +1249,10 @@ int DasRender_setX(DasRender* pThis, const char* sBeg, const char* sEnd)
 		return daserrf(DASERR_VALUE, "Time range '%s' to '%s' is empty", sBeg, sEnd);
 
 	/* Repainting here would read datasets outside a stream callback, and
-	 * by now the reader that owns them may be gone */
+	 * by now the reader that owns them may be gone.  After a pan the list
+	 * is empty but the grid isn't. */
+	if(pThis->bLocked)
+		return daserrf(DASERR_VALUE, "After a pan the time range moves only by panning");
 	if(pThis->nDs > 0)
 		return daserrf(DASERR_VALUE, "Set the time range before data arrive");
 
@@ -1250,6 +1263,73 @@ int DasRender_setX(DasRender* pThis, const char* sBeg, const char* sEnd)
 	return DAS_OKAY;
 }
 
+int DasRender_pan(DasRender* pThis, int nPx)
+{
+	if(!pThis->bHaveX)
+		return daserrf(DASERR_VALUE, "Set the time range before panning");
+
+	/* Whole pixels only, so the grid shift and the time shift agree: a
+	 * record lands in the same column whether it was painted before the
+	 * pan and moved, or painted again by the next stream. */
+	double rShift = nPx / pThis->rPxPerUs;
+	pThis->rT0 -= rShift;
+	pThis->rT1 -= rShift;
+
+	int nW = pThis->nW, nH = pThis->nH;
+	int nAbs = (nPx < 0) ? -nPx : nPx;
+	if(nAbs > nW) nAbs = nW;
+	int nKeep = nW - nAbs;
+	int nDst = (nPx > 0) ? nAbs : 0;   /* where the kept columns go */
+	int nSrc = (nPx > 0) ? 0 : nAbs;
+	int nClr = (nPx > 0) ? 0 : nKeep;  /* where the vacated ones start */
+
+	/* memmove, not memcpy: source and destination overlap within a row */
+	for(int r = 0; r < nH; ++r){
+		float* pV = pThis->pVal + (size_t)r*nW;
+		uint32_t* pC = pThis->pCount + (size_t)r*nW;
+		if(nKeep > 0){
+			memmove(pV + nDst, pV + nSrc, nKeep * sizeof(float));
+			memmove(pC + nDst, pC + nSrc, nKeep * sizeof(uint32_t));
+		}
+		for(int c = nClr; c < nClr + nAbs; ++c) pV[c] = -INFINITY;
+		memset(pC + nClr, 0, nAbs * sizeof(uint32_t));
+	}
+
+	/* The hottest density pixel may have just left the picture */
+	if(pThis->nKind == DASRENDER_DENSITY){
+		size_t uPx = (size_t)nW * nH;
+		uint32_t uMax = 0;
+		for(size_t u = 0; u < uPx; ++u) if(pThis->pCount[u] > uMax) uMax = pThis->pCount[u];
+		pThis->uMaxCount = uMax;
+	}
+
+	if(pThis->nMaxCol >= 0){
+		int nMin = pThis->nMinCol + nPx, nMax = pThis->nMaxCol + nPx;
+		if((nMax < 0)||(nMin >= nW)){
+			pThis->nMinCol = INT32_MAX;
+			pThis->nMaxCol = -1;
+		}
+		else{
+			pThis->nMinCol = (nMin < 0) ? 0 : nMin;
+			pThis->nMaxCol = (nMax >= nW) ? nW - 1 : nMax;
+		}
+	}
+
+	/* The datasets belong to the previous reader's stream, gone or going.
+	 * What they established stays: the kind, the dimension names the next
+	 * stream must match, the y bins' range, the color range and log flags.
+	 * Locking keeps it that way, since a widen or refit repaints "every
+	 * retained record", which would now be the gap alone, wiping the
+	 * columns just moved. */
+	for(int i = 0; i < pThis->nDs; ++i) _freeDs(pThis->pDs + i);
+	pThis->nDs = 0;
+	pThis->bNarrowDue = false;
+	if(pThis->nKind > DASRENDER_NONE) pThis->bLocked = true;
+
+	pThis->bDirty = true;
+	return DAS_OKAY;
+}
+
 const uint8_t* DasRender_colorize(DasRender* pThis)
 {
 	size_t uPx = (size_t)pThis->nW * pThis->nH;
@@ -1257,7 +1337,12 @@ const uint8_t* DasRender_colorize(DasRender* pThis)
 	const uint8_t* pMap = pThis->aMap;
 
 	if(pThis->nKind == DASRENDER_SPECTRO){
-		if(_spectroZCheck(pThis)){
+		/* Nothing painted: a pan can empty a grid that had data, so the
+		 * old image must not stay up */
+		if(!_spectroZCheck(pThis)){
+			for(size_t u = 0; u < uPx; ++u, pOut += 4){ pOut[0] = pOut[1] = pOut[2] = 0; pOut[3] = 255; }
+		}
+		else{
 			const float* pGrid = pThis->pVal;
 			float fMin = (float)pThis->rZMin;
 			float fScale = 255.0f / (float)(pThis->rZMax - pThis->rZMin);

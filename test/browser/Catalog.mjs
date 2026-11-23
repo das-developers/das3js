@@ -14,11 +14,15 @@
  *                partial copy in test/catalog/, instead of the network
  *   check=1      also click through the tree once and report the result
  *                to the node runner (make headless_test); implies internal
+ *   url=1        show each request's URL under the form (on for check=1)
+ *   check=live   plot real sources from the real servers and report the
+ *                result (make live_test), see LIVE_PLOTS
  */
 
 import {load, DasError} from '../build/das3js.mjs';
 import '../build/das-catalog-tree.mjs';     /* defines <das-catalog-tree> */
 import '../build/das-source-form.mjs';      /* defines <das-source-form> */
+import {QuickPlot} from './QuickPlot.mjs';
 
 const tree = document.getElementById('tree');
 const info = document.getElementById('info');
@@ -68,6 +72,11 @@ const STREAM_MIME = new Set([
 
 let cat = null;        /* the DasCatalog shown */
 let src = null;        /* the DasCatSource in the details pane, freed on change */
+
+/* One quick look for the page, full width under the panes, with its own
+ * Stop button.  It outlives the source it was asked from: browsing on
+ * leaves it up, and any source's Plot replaces it. */
+const plot = new QuickPlot(das, document.getElementById('plot'));
 let t0 = 0;
 
 /* ************************************************************************ */
@@ -114,7 +123,6 @@ function showNode(node)
 
 	/* Where it came from, for the curious, out of the way */
 	const dl = el('dl', {className: 'foot'});
-	field(dl, 'node type', `${node.type} ${node.version || ''}`.trim());
 	field(dl, 'loaded from', link(node.url));
 	info.append(dl);
 }
@@ -135,15 +143,16 @@ function showSource(node)
 			'  The catalog marks this source as protected; the server decides per request.'));
 
 	const form = el('das-source-form');
-	form.toggleAttribute('show-url', true);   /* a test page: show the URL */
+	form.toggleAttribute('show-url', showUrl);   /* a debugging aid, ?url=1 */
 	/* Date pickers only where typing is awkward: a touch screen, no mouse */
 	form.toggleAttribute('pickers', matchMedia('(pointer: coarse)').matches);
 
 	/* The page's buttons replace the form's own, through its actions slot */
+	const draw = el('button', {type: 'button', disabled: true}, 'Plot');
 	const view = el('button', {type: 'button', disabled: true}, 'View Structure');
 	const save = el('button', {type: 'button', disabled: true}, 'Download');
 	const note = el('span', {className: 'muted'});
-	const actions = el('span', {}, view, ' ', save, ' ', note);
+	const actions = el('span', {}, draw, ' ', view, ' ', save, ' ', note);
 	actions.setAttribute('slot', 'actions');
 	form.append(actions);
 
@@ -151,8 +160,19 @@ function showSource(node)
 	const isStream = mime => !mime || STREAM_MIME.has(mime);
 	form.addEventListener('das-change', ev => {
 		const {ok, mime} = ev.detail;
-		view.disabled = !(ok && isStream(mime));
+		const streamOk = ok && isStream(mime);
+		draw.disabled = !streamOk;
+		view.disabled = !streamOk;
 		save.disabled = !ok;
+	});
+	const title = node.title || node.label || node.name || '';
+	draw.addEventListener('click', () => {
+		if(plot.running){ plot.stop(); return; }
+		const res = form.submit();
+		if(!res || !res.ok) return;
+		/* A copy of the source of its own: the plot builds pan requests
+		 * from it after this page has moved on to another node */
+		plot.start(node.source(), res.settings, title);
 	});
 	view.addEventListener('click', () => {
 		const res = form.submit();
@@ -300,14 +320,15 @@ function checkForm()
 	const form = info.querySelector('das-source-form');
 	if(!form) throw new Error('no request form for MSC BAC');
 	const fr = form.shadowRoot;
-	const [view, save] = info.querySelectorAll('[slot=actions] button');
+	const btn = lbl => [...info.querySelectorAll('[slot=actions] button')].find(b => b.textContent === lbl);
+	const [draw, view, save] = ['Plot', 'View Structure', 'Download'].map(btn);
 
 	const exBtns = [...fr.querySelectorAll('[part=examples] button')].filter(b => b.textContent !== 'Defaults');
 	if(exBtns.length !== 2) throw new Error(`${exBtns.length} example buttons`);
 	exBtns[1].click();   /* asks for CDF, which can only be downloaded */
 	if(!form.current.ok || form.current.mime !== 'application/x-cdf')
 		throw new Error(`CDF example: ok ${form.current.ok}, mime '${form.current.mime}'`);
-	if(!view.disabled || save.disabled) throw new Error('CDF example: want Download only');
+	if(!draw.disabled || !view.disabled || save.disabled) throw new Error('CDF example: want Download only');
 	const fmtNow = fr.querySelector('[data-section=formats] summary .now').textContent;
 	if(fmtNow !== ': CDF file') throw new Error(`format heading '${fmtNow}'`);
 	exBtns[0].click();
@@ -426,9 +447,166 @@ async function selfCheck()
 	if(!sel.node.isSource || sel.entry.name !== 'flex')
 		throw new Error(`seeded MSC BAC gave a ${sel.node.kind} / ${sel.entry.name}`);
 
+	const plotMsg = await checkPlot();
+
 	return `opened ${top.uri}, ${n} rows; down to L2, MSC BAC collapsed to ${srcUri}; ${formMsg}; `
 		+ `with no-collapse ${SA} opened with ${nColl} row(s), the DSDF entry linked; `
-		+ `a two-source set drawn as a source opened with ${nTwo}`;
+		+ `a two-source set drawn as a source opened with ${nTwo}; ${plotMsg}`;
+}
+
+/* Plot one source's example the way a user would: show the source, press
+ * its example button, press Plot, wait for the run.  exLabel null takes
+ * the first example.  minLit is the share of the canvas that must be
+ * painted brighter than the background.  Returns the run's result. */
+async function plotExample(node, exLabel, minLit)
+{
+	showNode(node);
+	const form = info.querySelector('das-source-form');
+	const exs = [...form.shadowRoot.querySelectorAll('[part=examples] button')]
+		.filter(b => b.textContent !== 'Defaults');
+	const ex = exLabel ? exs.find(b => b.textContent === exLabel) : exs[0];
+	if(!ex) throw new Error(`${node.uri}: no example '${exLabel ?? 'any'}'`);
+	ex.click();
+	const draw = [...info.querySelectorAll('[slot=actions] button')].find(b => b.textContent === 'Plot');
+	if(!draw || draw.disabled) throw new Error(`${node.uri}: Plot button missing or off`);
+
+	draw.click();
+	const stop = document.querySelector('#plot .qp-stop');
+	if(!stop || stop.hidden) throw new Error('no Stop button on the plot while running');
+	const r = await plot.done;
+	if(r.state !== 'done' || r.kind !== 'spectrogram')
+		throw new Error(`${node.uri}: plot ${r.state}, ${r.kind}: ${r.message}`);
+	if(!stop.hidden) throw new Error('Stop button still showing after the plot finished');
+
+	const share = litShare();
+	if(share < minLit)
+		throw new Error(`${node.uri}: ${(100 * share).toFixed(1)}% of the canvas painted, want ${100 * minLit}%`);
+	return {...r, share, draw};
+}
+
+/* Share of the plot canvas brighter than the background */
+function litShare()
+{
+	const cv = document.querySelector('#plot .qp-canvas');
+	const px = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+	let lit = 0;
+	for(let i = 0; i < px.length; i += 4) if(px[i] + px[i + 1] + px[i + 2] > 60) ++lit;
+	return lit / (cv.width * cv.height);
+}
+
+/* Drag the plot right by frac of the data area's width, as a mouse
+ * would, and wait for the exposed span to be fetched and painted.  The
+ * x range must move back in time by that fraction (to a pixel's worth),
+ * and at least one gap fetch must have run and finished. */
+async function dragPlot(frac)
+{
+	const cv = document.querySelector('#plot .qp-canvas');
+	const box = cv.getBoundingClientRect();
+	const before = plot.range;
+	/* The color range, as the caption gives it, must survive the pan:
+	 * old and new columns share one scale */
+	const color = () => document.querySelector('#plot .qp-caption').textContent.match(/color [^,;]+/)?.[0];
+	const color0 = color();
+	/* Data area width: the canvas less QuickPlot's side margins, which
+	 * a synthesized drag mid-canvas doesn't need exactly */
+	const dx = (box.width - 80) * frac;
+	const x0 = box.left + box.width / 2, y = box.top + box.height / 3;
+	const send = (type, x) => cv.dispatchEvent(new PointerEvent(type, {
+		clientX: x, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1,
+		pointerId: 1, isPrimary: true, bubbles: true,
+	}));
+	send('pointerdown', x0);
+	send('pointermove', x0 + dx / 2);
+	send('pointermove', x0 + dx);
+	send('pointerup', x0 + dx);
+	const r = await plot.done;
+	const after = plot.range;
+	const span = before.t1 - before.t0;
+	const moved = (before.t0 - after.t0) / span;
+	if(Math.abs(moved - frac) > 0.01)
+		throw new Error(`drag of ${frac} moved the time axis by ${moved.toFixed(3)}`);
+	if(Math.abs((after.t1 - after.t0) - span) > 1) throw new Error('drag changed the time span');
+	if(color() !== color0) throw new Error(`pan changed the ${color0} to ${color()}`);
+	if(r.state !== 'done' || !(r.gaps > 0))
+		throw new Error(`pan fill ${r.state}, ${r.gaps} gap(s): ${r.message}`);
+	const text = document.querySelector('#plot .qp-range').textContent;
+	if(!text.startsWith(new Date(after.t0).toISOString().slice(0, 16)))
+		throw new Error(`header range '${text}' doesn't follow the pan`);
+	return {...r, moved, share: litShare()};
+}
+
+/* Offline: test/catalog/local/plot.json, whose one source is the 2018
+ * Voyager SA node answered by das2C's ex04 example stream.  2018 nodes
+ * spell the time range coords.time.minimum, so this also covers reading
+ * it back through DasCatSource.key().  The example is sparse; the live
+ * check below is the one that shows a full picture. */
+async function checkPlot()
+{
+	tree.catalog = null;
+	const opened = next('das-open');
+	open('https://local/plot.json', true);
+	await opened;
+	const sel = await clickRow(tree.shadowRoot.querySelector('ul'), 'Voyager 1 SA file');
+	if(!sel.node || !sel.node.isSource) throw new Error('plot source did not load');
+
+	const kMin = src.key('time.min');
+	if(!/^coords\.time\.min(imum)?$/.test(kMin || '')) throw new Error(`time.min resolves to '${kMin}'`);
+
+	const r = await plotExample(sel.node, 'The example day', 0.02);
+
+	/* The static server ignores the query and sends the whole day again,
+	 * which lands where the pan moved it: the lit share drops only by what
+	 * slid off the right edge */
+	const p = await dragPlot(0.25);
+	if(p.share < r.share * 0.5) throw new Error(`after the pan ${(100 * p.share).toFixed(1)}% lit`);
+
+	/* Stop before the first byte: the run must say so, not fail */
+	r.draw.click();
+	document.querySelector('#plot .qp-stop').click();
+	const s = await plot.done;
+	if(s.state !== 'stopped') throw new Error(`stopped run ended '${s.state}': ${s.message}`);
+	if(r.draw.disabled) throw new Error('Plot off after Stop');
+
+	return `plot: ${kMin} read back, ${r.bytes} bytes painted as a ${r.kind}, `
+		+ `${(100 * r.share).toFixed(0)}% lit, panned ${p.moved.toFixed(2)} with `
+		+ `${(100 * p.share).toFixed(0)}% lit, Stop honored`;
+}
+
+/* ************************************************************************ */
+/* Live check (make live_test): plot real sources from the real catalog,
+ * dense ones, so a broken painter or axis shows as a failure here and as
+ * an odd picture to anyone watching.  Each is loaded by catalog URI; a
+ * Collection is replaced by the source das2C can load in it, as the tree
+ * does.  Examples are the catalogs' own, so they can change upstream. */
+const LIVE_PLOTS = [
+	/* Perijove 16 at the example's 86.4 s, about 1.75 MB; 83 MB at full
+	 * resolution if the resolution parameter goes missing */
+	['tag:das2.org,2012:site:/uiowa/juno/wav/survey', 'Perijove 16'],
+	/* Key parameter grid, E field: flybys show in the radio emissions */
+	['tag:das2.org,2012:site:/uiowa/cassini/rpws/survey_grid', null],
+];
+
+async function liveCheck()
+{
+	/* The page opens the live root after starting this; wait for it */
+	await next('das-open');
+	const out = [];
+	for(const [uri, exLabel] of LIVE_PLOTS){
+		let node = await cat.resolve(uri);
+		if(!node.isSource){
+			const k = node.children.find(c => c.loadable);
+			if(!k) throw new Error(`${uri}: nothing loadable in a ${node.kind}`);
+			node = await node.child(k.name);
+		}
+		const r = await plotExample(node, exLabel, 0.25);
+		/* Pan back a quarter: only that quarter is requested, and the
+		 * picture stays about as full */
+		const p = await dragPlot(0.25);
+		if(p.share < 0.25) throw new Error(`${uri}: after the pan ${(100 * p.share).toFixed(1)}% lit`);
+		out.push(`${uri.slice(uri.indexOf('/uiowa/') + 7)}: ${r.bytes} bytes, ${(100 * r.share).toFixed(0)}% lit, `
+			+ `pan fill ${p.bytes} bytes, ${(100 * p.share).toFixed(0)}% lit`);
+	}
+	return out.join('; ');
 }
 
 /* ************************************************************************ */
@@ -449,6 +627,8 @@ document.getElementById('form').addEventListener('submit', ev => {
 const q = new URLSearchParams(location.search);
 seedBox.value = q.get('seed') || '';
 const check = q.get('check') === '1';
+const live = q.get('check') === 'live';
+const showUrl = check || q.get('url') === '1';
 const internal = check || q.get('internal') === '1';
 internalNote.hidden = !internal;
 flatBox.checked = q.get('flat') === '1';
@@ -458,4 +638,8 @@ if(check)
 	selfCheck().then(
 		msg => report(`INFO: catalog tree: ${msg}`, true),
 		e => report(`ERROR: catalog tree: ${e.message}`, false));
+else if(live)
+	liveCheck().then(
+		msg => report(`INFO: live plots: ${msg}`, true),
+		e => report(`ERROR: live plots: ${e.message}`, false));
 open(seedBox.value, internal);

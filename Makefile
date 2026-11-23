@@ -42,8 +42,10 @@
 #                 the only one supported so far.  The browser is run in an
 #                 independent profile.
 #
-# make live_test  Run in a headless browser, but against the live dasFlex
-#                 server at space.physics.uiowa.edu
+# make live_test  Run in a headless browser, but against the live servers:
+#                 the dasFlex server at space.physics.uiowa.edu, then plots
+#                 of Juno and Cassini examples found through the catalog
+#                 (jupiter and planet.physics.uiowa.edu)
 #
 # make pack       Write the npm package, build.wasm32/das3js-VERSION.tgz,
 #                 the file `npm publish` would upload
@@ -141,9 +143,7 @@ WASM_TEST_LFLAGS=--use-port=zlib -sENVIRONMENT=node -sNODERAWFS=1 \
 # -g at this link would keep the DWARF from every sub-module, making das2c.wasm
 # several times larger.  DEBUG=yes puts it back for stepping through
 # the C in a browser debugger, and is why the module link keeps the warning
-# waiver too.
-#
-# Run make clean first: nothing here notices DEBUG changing.
+# waiver too.  Switching DEBUG relinks by itself, see flags.txt below.
 ifeq ($(DEBUG),yes)
 MOD_DEBUG=-g
 endif
@@ -189,7 +189,7 @@ DAS2C_EXPORTS=\
  new_DasSrc_node del_DasSrc DasSrc_title DasSrc_needsAuth DasSrc_authRealm \
  DasSrc_numExamples DasSrc_exampleLblAt new_DasReq_src DasSrc_mime \
  DasSrc_reqUrl \
- del_DasReq DasReq_set DasSrc_check
+ del_DasReq DasReq_set DasSrc_check DasSrc_findProp DasSrcProp_key
 
 # emcc wants one comma separated list with a leading underscore on each name
 EMPTY:=
@@ -223,7 +223,7 @@ help:
 	@echo '  make                 build the browser module and our test program'
 	@echo '  make test            run our tests under node'
 	@echo '  make headless_test   run the module in headless Firefox, local fixtures'
-	@echo '  make live_test       same, against space.physics.uiowa.edu'
+	@echo '  make live_test       same, against the live servers, plots included'
 	@echo '  make pack            write the npm package, $(PACK)'
 	@echo '  make pack_test       install the package into test/npm consumers, run them'
 	@echo '  make server          serve test pages on http://127.0.0.1:9099'
@@ -238,12 +238,12 @@ test: $(WBD)/TestWasm.js $(WBD)/TestRender.js
 	cd $(DAS2C) && $(NODE) $(CURDIR)/$(WBD)/TestWasm.js
 	cd $(DAS2C) && $(NODE) $(CURDIR)/$(WBD)/TestRender.js
 
-$(WBD)/TestWasm.js: test/TestWasm.c glue/wasm.c glue/wasm.h $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) | $(WBD)
+$(WBD)/TestWasm.js: test/TestWasm.c glue/wasm.c glue/wasm.h $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) $(WBD)/flags.txt | $(WBD)
 	$(EMCC) $(WASM_CFLAGS) test/TestWasm.c glue/wasm.c $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) $(WASM_TEST_LFLAGS) -o $@
 
 # Pass a directory to also get PPM images, e.g. from the das2C checkout:
 #   node ../../build.wasm32/TestRender.js ../../tmp
-$(WBD)/TestRender.js: test/TestRender.c src/render.c src/render.h glue/wasm.c glue/wasm.h $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) | $(WBD)
+$(WBD)/TestRender.js: test/TestRender.c src/render.c src/render.h glue/wasm.c glue/wasm.h $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) $(WBD)/flags.txt | $(WBD)
 	$(EMCC) $(WASM_CFLAGS) test/TestRender.c src/render.c glue/wasm.c $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) $(WASM_TEST_LFLAGS) -o $@
 
 # Always recurse: das2C's own dependency tracking decides what to rebuild
@@ -254,11 +254,19 @@ $(DAS2C_WASM_LIB): FORCE
 # for another way to build them nor, under -j, checks for them too early
 $(DAS2C_DEP_LIBS): $(DAS2C_WASM_LIB) ;
 
+# The compile and link flags as a file that is rewritten only when they
+# change, so editing DAS2C_EXPORTS (say) relinks everything that uses
+# them, while editing a comment or the help text relinks nothing.  The
+# Makefile itself as a prerequisite would do the latter too.
+WASM_FLAGS_TXT=$(WASM_CFLAGS) $(MOD_DEBUG) | $(WASM_MOD_LFLAGS) | $(WASM_TEST_LFLAGS)
+$(WBD)/flags.txt: FORCE | $(WBD)
+	@echo '$(WASM_FLAGS_TXT)' | cmp -s - $@ || echo '$(WASM_FLAGS_TXT)' > $@
+
 ## Wasm ######################################################################
 
 module: $(MODULE) $(JS_OUT)
 
-$(MODULE): glue/wasm.c glue/wasm.h src/render.c src/render.h $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) | $(WBD)
+$(MODULE): glue/wasm.c glue/wasm.h src/render.c src/render.h $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) $(WBD)/flags.txt | $(WBD)
 	$(EMCC) $(WASM_CFLAGS) $(MOD_DEBUG) glue/wasm.c src/render.c $(DAS2C_WASM_LIB) $(DAS2C_DEP_LIBS) $(WASM_MOD_LFLAGS) -o $@
 
 # The ES module sits beside the loader it imports, so one directory is the
@@ -318,6 +326,7 @@ pack_test: $(PACK)
 # Same runner, real server: needs the network and a public dasFlex that is up
 live_test: module
 	$(NODE) test/browser/run.mjs TestLive.html
+	$(NODE) test/browser/run.mjs 'Catalog.html?check=live'
 
 # Same page against the dasFlex checkout next door, served through the CGI
 # shim in test/dasflex_cgi.py; no network, no Apache.  A sibling checkout
@@ -347,7 +356,7 @@ server: module
 # HTPASSWD is a path on the SERVER; Apache reads it there.  Create the file
 # there too, with: htpasswd -c /that/path/.htpasswd someuser
 SITE=$(WBD)/site
-SITE_FIXTURES=ex01_polar_mfe.d2t ex08_cassini_rpws_survey.d2t \
+SITE_FIXTURES=ex01_polar_mfe.d2t ex04_voyager_pws_sa.d2s ex08_cassini_rpws_survey.d2t \
  ex09_juno_waves_survey.d2t ex17_vector_noframe.d3b ex19_cassini_ragged_wfrm.d3t \
  ex35_strings_rank2.d3b
 
