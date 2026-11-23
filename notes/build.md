@@ -97,7 +97,7 @@ above `das/site`, still come from `test/catalog`.
 
     make pack
 
-writes `build.wasm32/das3js-VERSION.tgz`, the file `npm publish` would
+writes `build.wasm32/dasdevelopers-das3js-VERSION.tgz`, the file `npm publish` would
 upload: the three module files plus README, LICENSE and package.json, as
 listed under `"files"` in package.json.  The version is read from
 package.json.  `npm pack --dry-run` lists the contents without writing
@@ -137,7 +137,7 @@ run one at a time:
     make pack
     cd test/npm/vite
     npm ci                                          # tools, from the lockfile
-    npm install --no-save ../../../build.wasm32/das3js-*.tgz
+    npm install --no-save ../../../build.wasm32/dasdevelopers-das3js-*.tgz
     npm run build                                   # vite and webpack only
     cd ../../..
 

@@ -16,7 +16,7 @@
  * all on the same server as the app.  The same check is in each consumer
  * under test/npm. */
 
-import {load} from 'das3js';
+import {load} from '@dasdevelopers/das3js';
 
 const WHO = 'vite';
 const FIXTURE = '/das2C/examples/ex08_cassini_rpws_survey.d2t';

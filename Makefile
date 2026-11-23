@@ -47,7 +47,7 @@
 #                 of Juno and Voyager examples found through the catalog
 #                 (jupiter and planet.physics.uiowa.edu)
 #
-# make pack       Write the npm package, build.wasm32/das3js-VERSION.tgz,
+# make pack       Write the npm package, build.wasm32/dasdevelopers-das3js-VERSION.tgz,
 #                 the file `npm publish` would upload
 #
 # make pack_test  Pack the npm tarball and install it into the consumer
@@ -295,12 +295,16 @@ headless_test: module
 # make clean removes it.  The version comes from package.json, which is
 # the one place it is written down.
 VERSION:=$(shell sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' package.json)
-PACK=$(WBD)/das3js-$(VERSION).tgz
+PKG_NAME:=$(shell sed -n 's/^[[:space:]]*"name":[[:space:]]*"\([^"]*\)".*/\1/p' package.json)
+
+# npm pack's own file name: a scoped @scope/name packs as scope-name-VERSION.tgz
+PACK_BASE:=$(subst /,-,$(subst @,,$(PKG_NAME)))
+PACK=$(WBD)/$(PACK_BASE)-$(VERSION).tgz
 
 pack: $(PACK)
 
 $(PACK): $(MODULE) $(JS_OUT) package.json README.md LICENSE | $(WBD)
-	rm -f $(WBD)/das3js-*.tgz
+	rm -f $(WBD)/$(PACK_BASE)-*.tgz
 	$(NODE_PATH_PFX) $(NPM) pack --silent --pack-destination $(WBD) > /dev/null
 
 # Each consumer installs the tarball without recording it (--no-save), so

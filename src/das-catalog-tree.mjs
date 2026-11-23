@@ -8,8 +8,8 @@
  *
  * Usage:
  *
- *   import {load} from 'das3js';
- *   import 'das3js/catalog-tree';         // defines the tag
+ *   import {load} from '@dasdevelopers/das3js';
+ *   import '@dasdevelopers/das3js/catalog-tree';   // defines the tag
  *
  *   const tree = document.querySelector('das-catalog-tree');
  *   tree.catalog = (await load()).newCatalog();

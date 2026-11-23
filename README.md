@@ -41,14 +41,15 @@ A screenshot of a live run is below. Method and more streams are in
 
 ## Using das3js
 
-Install it from npm:
+Install it from npm, where it is published by the DasDevelopers
+organization:
 
-    npm install das3js
+    npm install @dasdevelopers/das3js
 
 Then read a stream:
 
 ```js
-import {load} from 'das3js';
+import {load} from '@dasdevelopers/das3js';
 
 const das3 = await load();                  // once per page or worker
 const strm = await das3.fetchStream(url);   // parses as the bytes arrive
@@ -71,8 +72,8 @@ Two optional custom elements build on the core, for pages that let
 people find and request data.  Each import defines its tag:
 
 ```js
-import 'das3js/catalog-tree';    // <das-catalog-tree>: browse a das catalog
-import 'das3js/source-form';     // <das-source-form>: a request form for one source
+import '@dasdevelopers/das3js/catalog-tree';    // <das-catalog-tree>: browse a das catalog
+import '@dasdevelopers/das3js/source-form';     // <das-source-form>: a request form for one source
 
 const tree = document.querySelector('das-catalog-tree');
 const form = document.querySelector('das-source-form');
@@ -111,7 +112,7 @@ path.  You can exclude it from pre-bundling in `vite.config.js`:
 
 ```js
 export default {
-	optimizeDeps: {exclude: ['das3js']},
+	optimizeDeps: {exclude: ['@dasdevelopers/das3js']},
 };
 ```
 
@@ -148,10 +149,10 @@ an import map:
 
 ```html
 <script type="importmap">
-{"imports": {"das3js": "https://cdn.jsdelivr.net/npm/das3js@0.2/build.wasm32/das3js.mjs"}}
+{"imports": {"@dasdevelopers/das3js": "https://cdn.jsdelivr.net/npm/@dasdevelopers/das3js@0.2/build.wasm32/das3js.mjs"}}
 </script>
 <script type="module">
-import {load} from 'das3js';
+import {load} from '@dasdevelopers/das3js';
 // ...
 </script>
 ```
@@ -183,7 +184,7 @@ build, and Firefox for the browser tests.  Then:
     make                  # the module in build.wasm32/, and the test programs
     make test             # the C layer under Node
     make headless_test    # the module in headless Firefox
-    make pack             # the npm tarball, build.wasm32/das3js-VERSION.tgz
+    make pack             # the npm tarball, build.wasm32/dasdevelopers-das3js-VERSION.tgz
 
 The first `make` downloads expat and FFTW, checks them against pinned
 SHA-256 sums and builds them for wasm32, and emscripten fetches its zlib

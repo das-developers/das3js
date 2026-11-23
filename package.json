@@ -1,6 +1,6 @@
 {
-	"name": "das3js",
-	"version": "0.2.1",
+	"name": "@dasdevelopers/das3js",
+	"version": "0.2.2",
 	"description": "Read das streams and walk das catalogs in web browsers: das2C compiled to WebAssembly",
 	"license": "MIT AND LGPL-2.1-only",
 	"repository": {
@@ -20,6 +20,7 @@
 		"build.wasm32/das-catalog-tree.mjs",
 		"build.wasm32/das-source-form.mjs"
 	],
+	"publishConfig": {"access": "public"},
 	"sideEffects": [
 		"./build.wasm32/das-catalog-tree.mjs",
 		"./build.wasm32/das-source-form.mjs"

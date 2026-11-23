@@ -4,16 +4,17 @@
 <meta charset="utf-8">
 <title>das3js from npm, no build tools</title>
 
-<!-- An import map gives a bare name like 'das3js' a URL, which is what
-     bundlers otherwise work out from node_modules.  Here it points into the
-     unpacked package, the layout a CDN serves.  From jsDelivr the URL would
-     be https://cdn.jsdelivr.net/npm/das3js@0.1.0/build.wasm32/das3js.mjs and
-     nothing else on this page would change.  das2c.mjs and das2c.wasm are
+<!-- An import map gives a bare name like '@dasdevelopers/das3js' a URL,
+     which is what bundlers otherwise work out from node_modules.  Here it
+     points into the unpacked package, the layout a CDN serves.  From
+     jsDelivr the URL would be
+     https://cdn.jsdelivr.net/npm/@dasdevelopers/das3js@0.2/build.wasm32/das3js.mjs
+     and nothing else on this page would change.  das2c.mjs and das2c.wasm are
      found beside das3js.mjs, so only the entry point is mapped. -->
 <script type="importmap">
 {
 	"imports": {
-		"das3js": "./node_modules/das3js/build.wasm32/das3js.mjs"
+		"@dasdevelopers/das3js": "./node_modules/@dasdevelopers/das3js/build.wasm32/das3js.mjs"
 	}
 }
 </script>
@@ -23,7 +24,7 @@
 /* The same check as the other consumers under test/npm, inline since there
  * is no bundler to collect files.  Protocol: test/browser/run.mjs. */
 
-import {load} from 'das3js';
+import {load} from '@dasdevelopers/das3js';
 
 const WHO = 'importmap';
 const FIXTURE = '/das2C/examples/ex08_cassini_rpws_survey.d2t';

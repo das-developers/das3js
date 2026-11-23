@@ -9,8 +9,8 @@
  *
  * Usage:
  *
- *   import {load} from 'das3js';
- *   import 'das3js/source-form';           // defines the tag
+ *   import {load} from '@dasdevelopers/das3js';
+ *   import '@dasdevelopers/das3js/source-form';    // defines the tag
  *
  *   const form = document.querySelector('das-source-form');
  *   form.source = node.source();           // a DasCatSource
