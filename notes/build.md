@@ -82,6 +82,17 @@ Your browser should open to an index of the test pages and two tools:
 
 `make server PAGE=Perf.html` opens straight onto one page.
 
+The catalog browser normally walks das2.org.  To browse a local copy
+instead, such as das-cat output not yet deployed or a snapshot kept for
+when das2.org is down, lay it over the internal test catalog:
+
+    make server RUNFLAGS=--catalog=$HOME/git/das-cat/tmp/catalog-0.8
+
+and open `Catalog.html?internal=1`.  The directory is laid out as
+`https://das2.org/catalog/` is (`das/site/uiowa.json` and so on).  Files it
+has replace the test catalog's; the ones it lacks, such as the root index
+above `das/site`, still come from `test/catalog`.
+
 ## The npm package
 
     make pack

@@ -330,7 +330,7 @@ function checkForm()
 		throw new Error('day of year time refused');
 	/* The URL line reads decoded but links to the real URL */
 	const urlA = fr.querySelector('[part=url] a');
-	if(!urlA || urlA.href !== form.current.url || !form.current.url.includes('read.time.min=2026-195T22%3A11')
+	if(!urlA || urlA.href !== form.current.url || !form.current.url.includes('read.time.min=2026-195T22:11')
 	   || !urlA.textContent.includes('read.time.min=2026-195T22:11'))
 		throw new Error(`url line '${urlA?.textContent}' -> ${urlA?.href}`);
 

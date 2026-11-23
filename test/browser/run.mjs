@@ -16,7 +16,7 @@
  * before it can report anything.
  *
  * Usage: node test/browser/run.mjs [page.html] [--keep] [--dasflex=DIR] [--serve]
- *        [--timeout=SECONDS] [--app=DIR | --vite-dev=DIR]
+ *        [--timeout=SECONDS] [--app=DIR | --vite-dev=DIR] [--catalog=DIR]
  *
  *   page is a path on the server, not on disk.  The server maps URL
  *   prefixes to directories (MOUNTS below: /test/ is test/browser, /das2C/
@@ -40,6 +40,13 @@
  *   writes its output for the root of a site, and the other mounts stay
  *   reachable, so the app fetches fixtures from /das2C/ and reports to /log
  *   and /done like any test page.
+ *   --catalog lays a copy of https://das2.org/catalog/ over the internal
+ *   test catalog: DIR is laid out as that site is, das/site/uiowa.json and
+ *   so on, as das-cat writes it.  A file DIR has is served in place of the
+ *   test catalog's; what it lacks, such as the root index above das/site,
+ *   still comes from test/catalog.  Pages read it the way they read the
+ *   test catalog, Catalog.html?internal=1.  For when das2.org is down, or
+ *   to try nodes before they are deployed.
  *   --vite-dev is --app for a Vite project's sources instead of its build:
  *   paths no mount claims go to Vite's dev server, run in middleware mode
  *   inside this one.  Vite comes from DIR/node_modules, the consumer's own
@@ -51,6 +58,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import {spawn} from 'node:child_process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
@@ -58,7 +66,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
 
 /* URL prefix -> directory.  Fixtures are served straight out of the das2C
- * checkout so the browser test reads the same files the native test does. */
+ * checkout so the browser test reads the same files the native test does.
+ * An optional third element marks an overlay: a file it lacks is looked
+ * for in the mounts after it, instead of being a 404. */
 const MOUNTS = [
 	['/build/', path.join(ROOT, 'build.wasm32')],
 	['/test/',  HERE],
@@ -127,6 +137,19 @@ const listenPort = serve ? (portArg ? Number(portArg.split('=')[1]) : SERVE_PORT
 const page = args.find(a => !a.startsWith('--')) || 'TestModule.html';
 const dasflexArg = args.find(a => a.startsWith('--dasflex'));
 const appArg = args.find(a => a.startsWith('--app='));
+const catalogArg = args.find(a => a.startsWith('--catalog='));
+
+/* First, so it is consulted before the /catalog/ mount it overlays.  A
+ * leading ~ is expanded here: the shell leaves one after "=" alone. */
+if(catalogArg){
+	const dir = path.resolve(catalogArg.slice('--catalog='.length).replace(/^~(?=\/|$)/, os.homedir()));
+	if(!fs.existsSync(path.join(dir, 'das'))){
+		console.log(`ERROR: --catalog: no das/ directory in ${dir}`);
+		process.exit(1);
+	}
+	MOUNTS.unshift(['/catalog/das2.org/catalog/', dir, true]);
+	console.log(`INFO: catalog overlay ${dir} on /catalog/das2.org/catalog/`);
+}
 
 /* Last, so the named mounts above win; '/' matches every path */
 if(appArg)
@@ -222,7 +245,7 @@ const server = http.createServer(async (req, res) => {
 		extra = CORS;
 	}
 
-	for(const [prefix, dir] of MOUNTS){
+	for(const [prefix, dir, overlay] of MOUNTS){
 		if(!pathname.startsWith(prefix)) continue;
 		/* path.normalize then a prefix check keeps ../ from escaping the mount */
 		const rel = path.normalize(decodeURIComponent(pathname.slice(prefix.length)));
@@ -230,7 +253,10 @@ const server = http.createServer(async (req, res) => {
 		if(!file.startsWith(dir)) break;
 		let data;
 		try{ data = fs.readFileSync(file); }
-		catch(e){ break; }
+		catch(e){
+			if(overlay) continue;
+			break;
+		}
 		res.writeHead(200, {
 			'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
 			'Cache-Control': 'no-store',

@@ -92,9 +92,11 @@ DAS_WASM_API void daswasm_init(const char* sProgName);
 
 /** The text of the most recent das2C error, or an empty string.
  *
- * The text stays until the next error or daswasm_clearError(), so on its
- * own it may describe an older call: not every failure goes through the
- * error path (some only log, some just return NULL).  Clear before a call
+ * The text is the newest message logged with an error code, or at error
+ * level or above without one; das2C reports some failures only that way.
+ * It stays until the next such message or daswasm_clearError(), so on its
+ * own it may describe an older call: not every failure says anything (some
+ * just return NULL).  Clear before a call
  * whose failure you intend to report, and an empty answer afterwards means
  * "failed without saying why" rather than someone else's message. */
 DAS_WASM_API const char* daswasm_lastError(void);
@@ -575,7 +577,8 @@ DAS_WASM_API char* daswasm_node_json(const DasNode* pNode);
  *   examples labels, by index, see new_DasReq_src()
  *   section  name ("coords"|"data"|"formats"|"options"), groups
  *   group    name, label, title, enable, xorGroup, mimes, props
- *   prop     key, name, label, title, type, typeName, units, value, ctrl
+ *   prop     key, name, label, title, type, typeName, units, value,
+ *            multi, minItems, maxItems, ctrl
  *   ctrl     param, required, choices, range
  *   choice   value, label
  *
@@ -589,7 +592,16 @@ DAS_WASM_API char* daswasm_node_json(const DasNode* pNode);
  *             none, "" for an option with nothing to say
  *   type      "text", "boolean", "integer", "real", "time" or "enum"
  *   value     the default, or for a fixed property its value; null for
- *             none, which on a required control means the user must give one
+ *             none, which on a required control means the user must give one.
+ *             For a list property, the items separated by commas, null for
+ *             an empty list
+ *   multi     true for a property that holds a list, see DasSrcProp_multi();
+ *             a requisition gives its items separated by commas, "Ex,Ew"
+ *   minItems  fewest items a given list may have, 0 when unstated; an empty
+ *             list is allowed anyway unless the control is required.  1 for
+ *             an ordinary property
+ *   maxItems  most items a list may have, null when unbounded; 1 for an
+ *             ordinary property
  *   ctrl      how the property may be set, null for a fixed one
  *   param     the server parameter it feeds
  *   range     [low, high], either end null when unstated; null for no range.

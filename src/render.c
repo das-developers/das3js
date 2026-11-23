@@ -266,12 +266,18 @@ static bool _toUs2000(const uint8_t* p, das_vt vt, DasUnits units, double* pOut)
 	return true;
 }
 
-/* Lend the elements of a subset; NULL with *pN = 0 if empty */
+/* Lend the elements of a subset; NULL with *pN = 0 if empty.  das2C's
+ * count is signed, negative on error (already logged); to the painter an
+ * error and an empty row are the same: nothing to paint. */
 static const uint8_t* _elems(const DasAry* pAry, size_t* pN)
 {
 	*pN = 0;
 	if(pAry == NULL) return NULL;
-	return DasAry_valsIn(pAry, DasAry_vt(pAry), DAS_ADDR0, pN);
+	ptrdiff_t n = 0;
+	const uint8_t* p = DasAry_valsIn(pAry, DasAry_vt(pAry), DAS_ADDR0, &n);
+	if((p == NULL)||(n <= 0)) return NULL;
+	*pN = (size_t)n;
+	return p;
 }
 
 /* One record of a variable, all items.  nItems ignored for rank 1. */

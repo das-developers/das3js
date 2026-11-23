@@ -10,6 +10,7 @@
  * skips the POSTs and still works. */
 
 import {load, DasError, basicAuth} from '../build/das3js.mjs';
+import '../build/das-source-form.mjs';      /* defines <das-source-form> */
 
 const out = document.getElementById('out');
 let failed = false;
@@ -499,7 +500,7 @@ async function catalogChecks(d)
 		const freq = fs.request(undefined, {time: '2025-10-01T12'});
 		check(freq.url.startsWith('https://space.physics.uiowa.edu/das/stream/source/'
 			+ 'tracers/tracers-1/l2/msc_bac/flex?'), `request url ${freq.url}`);
-		check(freq.url.includes('read.time.min=2025-10-01T12%3A00%3A00'), `time not in ${freq.url}`);
+		check(freq.url.includes('read.time.min=2025-10-01T12:00:00'), `time not in ${freq.url}`);
 		log(`INFO: catalog: request ${freq.url} (${freq.mime || 'no mime'})`);
 		const cdf = fs.request(1);
 		check(cdf.mime === 'application/x-cdf', `CDF example mime '${cdf.mime}'`);
@@ -572,7 +573,7 @@ async function catalogChecks(d)
 	check(src.examples.length > 0, 'das2 has no examples');
 	const req = src.request(undefined, {time: '2014-08-31T12'});
 	check(req.url.startsWith(VGR_DAS2), `request url ${req.url}`);
-	check(req.url.includes('start_time=2014-08-31T12%3A00%3A00'), `time not in ${req.url}`);
+	check(req.url.includes('start_time=2014-08-31T12:00:00'), `time not in ${req.url}`);
 	log(`INFO: catalog: request ${req.url} (${req.mime || 'no mime'})`);
 	let threw = false;
 	try{ src.request(undefined, {'no.such.key': '1'}); }
@@ -608,6 +609,119 @@ async function catalogChecks(d)
 	const hang = d.newCatalog({seed: 'https://hang.invalid/x.json', fetch: fixtureFetch, timeout: 300});
 	await expectThrow(hang.open(), /no answer/, 'silent server');
 	hang.free();
+	return d;
+}
+
+/* List properties ("multi", das2C 3.0.6), on das2C's own fixture for them:
+ * the form model's bounds, list text in a check, and <das-source-form>
+ * drawing an enum list as check boxes.  How lists become URLs in detail
+ * is das2C's to test; here only that the text gets through. */
+async function listChecks(d)
+{
+	const MULTI = 'https://fixture.invalid/multi_0.7.json';
+	const fx = (url, init) => fetch(url.replace('https://fixture.invalid/', '../das2C/test/das_fetch/'), init);
+	const src = await d.loadSource(MULTI, {fetch: fx});
+	try{
+		const props = new Map();
+		for(const sc of src.form.sections) for(const g of sc.groups) for(const p of g.props) props.set(p.key, p);
+		const lists = [...props.values()].filter(p => p.multi).map(p => p.key);
+		log(`INFO: lists: ${lists.length} list properties: ${lists.join(' ')}`);
+
+		const fan = props.get('options.fan'), notch = props.get('options.notches');
+		const dft = props.get('options.dft');
+		check(fan?.multi && fan.minItems === 0 && fan.maxItems === null && fan.value === '090,270',
+			`fan: ${JSON.stringify(fan)}`);
+		check(notch?.multi && notch.minItems === 1 && notch.maxItems === 3, `notches bounds ${notch?.minItems}..${notch?.maxItems}`);
+		check(dft && !dft.multi && dft.minItems === 1 && dft.maxItems === 1, `dft: multi ${dft?.multi}`);
+
+		const two = src.check({'options.fan': '090,180'});
+		check(two.ok && two.url.includes('fan=090,180'), `two fans: ok ${two.ok}, ${two.url}`);
+		const many = src.check({'options.parameters': 'bx,by,bz'});
+		const why = many.entries.find(e => e.key === 'options.parameters');
+		check(!many.ok && why?.verdict === 'bad', `three of at most two parameters: ${JSON.stringify(why)}`);
+		log(`INFO: lists: ${two.url}; three parameters: ${why?.why}`);
+
+		/* The element: fan's boxes start at its default, a click adds one */
+		const form = document.createElement('das-source-form');
+		document.body.append(form);
+		try{
+			form.source = src;
+			const row = form.shadowRoot.getElementById('f-options.fan');
+			const boxes = row ? [...row.querySelectorAll('input[type=checkbox]')] : [];
+			check(row?.tagName === 'FIELDSET' && boxes.length === 3, `fan drawn as ${row?.tagName} with ${boxes.length} boxes`);
+			check(boxes.map(b => b.checked).join() === 'true,false,true', 'fan boxes do not show the default');
+			check(form.settings['options.fan'] === '090,270', `fan setting ${form.settings['options.fan']}`);
+			boxes[1]?.click();
+			check(form.settings['options.fan'] === '090,180,270', `fan after a click ${form.settings['options.fan']}`);
+			form.settings = {'options.fan': '180'};
+			check(boxes.map(b => b.checked).join() === 'false,true,false', 'fan boxes after settings = 180');
+			const notchBox = form.shadowRoot.getElementById('f-options.notches');
+			check(notchBox?.type === 'text', `notches, a list with no choices, drawn as ${notchBox?.type}`);
+			form.source = null;
+		}
+		finally{ form.remove(); }
+	}
+	finally{ src.free(); }
+	return d;
+}
+
+/* A server with nothing in the interval: one exception packet, no stream
+ * header, as planet.physics.uiowa.edu sent for a Van Allen Probes example
+ * on 2026-11-22.  take() has nothing to give; its error must carry the
+ * server's words. */
+function noDataChecks(d)
+{
+	const body = `[xx]000086<exception type="NoDataInInterval" `
+		+ `message='no data found in 2013-06-01/2013-06-02'/>\n`;
+	const rdr = d.newReader();
+	try{
+		rdr.feed(new TextEncoder().encode(body));
+		rdr.end();
+		let err = null;
+		try{ rdr.take().free(); }
+		catch(e){ err = e; }
+		check(err instanceof DasError && /no data found/.test(err.message) && /no data found/.test(err.exception),
+			`no data: ${err?.name} '${err?.message}', exception '${err?.exception}'`);
+		log(`INFO: no data: ${err?.message}`);
+	}
+	finally{ rdr.free(); }
+	return d;
+}
+
+/* A node whose protocol section refuses a value its interface offers,
+ * the shape of dasFlex nodes written before das2C 3.0.6 enforced the
+ * protocol's enum lists (format.type without "cdf").  Every entry checks
+ * out, yet there is no URL; the reason must reach the caller and the
+ * form, not just the console. */
+async function enumGapChecks(d)
+{
+	const src = await d.loadSource('https://local/enum_gap.json', {fetch: fixtureFetch});
+	try{
+		const T = {'coords.time.min': '2026-01-01', 'coords.time.max': '2026-01-02'};
+		const das = src.check(T);
+		check(das.ok && das.error === undefined, `enum gap, das format: ok ${das.ok}, error ${das.error}`);
+		const cdf = src.check({...T, 'formats.cdf.enabled': 'true'});
+		check(!cdf.ok && cdf.bad === 0 && /does not list/.test(cdf.error ?? ''),
+			`enum gap, cdf: ok ${cdf.ok}, bad ${cdf.bad}, error '${cdf.error}'`);
+		await expectThrow(Promise.resolve().then(() => src.request(-1, {...T, 'formats.cdf.enabled': 'true'})),
+			/does not list/, 'request() for the refused format');
+
+		/* The form shows the reason even without show-url */
+		const form = document.createElement('das-source-form');
+		document.body.append(form);
+		try{
+			form.source = src;
+			form.settings = {...T, 'formats.cdf.enabled': 'true'};
+			const line = form.shadowRoot.querySelector('.url');
+			check(line && !line.hidden && /does not list/.test(line.textContent),
+				`form reason line: hidden ${line?.hidden}, '${line?.textContent}'`);
+			form.source = null;
+		}
+		finally{ form.remove(); }
+		log(`INFO: enum gap: ${cdf.error}`);
+	}
+	finally{ src.free(); }
+	return d;
 }
 
 /* Login, against /auth/ on the runner: the das2C mount behind Basic auth,
@@ -657,5 +771,8 @@ async function authChecks(d)
 main()
 	.then(authChecks)
 	.then(catalogChecks)
+	.then(listChecks)
+	.then(enumGapChecks)
+	.then(noDataChecks)
 	.catch(e => check(false, `uncaught: ${e.message}\n${e.stack || ''}`))
 	.then(done);

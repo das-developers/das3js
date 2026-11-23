@@ -50,7 +50,11 @@
 /* das2C keeps no copy of an error message: daserrf() hands it to
    the log hook and returns.  A foreign caller asks for the text after the
    failing call has returned, so the hook keeps the newest one here.  The wasm
-   target is single threaded, so a static is fine. */
+   target is single threaded, so a static is fine.
+
+   Some failures are only logged, at error level without an error code:
+   DasSrc_reqUrl() returns 0 and says why through daslog_errorf().  Those
+   are kept too, or the caller would have no reason to show. */
 static char g_sLastErr[DASLOG_MSG_SZ] = {'\0'};
 
 /* Runs inside das2C's logger: may not call back into das2C except for
@@ -58,7 +62,7 @@ static char g_sLastErr[DASLOG_MSG_SZ] = {'\0'};
 static void _daswasm_onLog(const DasLogMsg* pMsg, void* pUser)
 {
 	(void)pUser;
-	if(pMsg->errCode != DAS_OKAY)
+	if((pMsg->errCode != DAS_OKAY)||(pMsg->level >= DASLOG_ERROR))
 		snprintf(g_sLastErr, sizeof(g_sLastErr), "%s", pMsg->msg);
 
 	/* Errors reach the console too: emscripten maps stderr there */
@@ -412,17 +416,17 @@ int daswasm_ary_size(const DasAry* pAry){ return (int)DasAry_size(pAry); }
 
 const uint8_t* daswasm_ary_data(DasAry* pAry)
 {
-	size_t uVals = 0;
-	return DasAry_valsIn(pAry, DasAry_vt(pAry), DAS_ADDR0, &uVals);
+	ptrdiff_t nVals = 0;
+	return DasAry_valsIn(pAry, DasAry_vt(pAry), DAS_ADDR0, &nVals);
 }
 
 const char* daswasm_ary_textAt(DasAry* pAry, int i)
 {
-	size_t uVals = 0;
+	ptrdiff_t nVals = 0;
 	if(DasAry_vt(pAry) != DASVT_TEXT)
 		return NULL;
-	char** pStrs = (char**)DasAry_valsIn(pAry, DASVT_TEXT, DAS_ADDR0, &uVals);
-	if((pStrs == NULL)||(i < 0)||((size_t)i >= uVals))
+	char** pStrs = (char**)DasAry_valsIn(pAry, DASVT_TEXT, DAS_ADDR0, &nVals);
+	if((pStrs == NULL)||(i < 0)||(i >= nVals))
 		return NULL;
 	return pStrs[i];
 }
@@ -455,37 +459,39 @@ int daswasm_ary_lengthAt(const DasAry* pAry, const int* pLoc, int nLoc)
 int daswasm_ary_sizeAt(DasAry* pAry, const int* pLoc, int nLoc)
 {
 	ptrdiff_t aLoc[DASIDX_MAX];
-	size_t uVals = 0;
+	ptrdiff_t nVals = 0;
 	if(_daswasm_loc(pAry, pLoc, nLoc, aLoc) < 0)
 		return -1;
-	if(DasAry_valsIn(pAry, DasAry_vt(pAry), nLoc, aLoc, &uVals) == NULL)
-		return 0;
-	return (int)uVals;
+
+	/* The count is always written: 0 for nothing there (a record not yet
+	   arrived is not an error), -errcode on a real failure */
+	DasAry_valsIn(pAry, DasAry_vt(pAry), nLoc, aLoc, &nVals);
+	return (nVals < 0) ? -1 : (int)nVals;
 }
 
 const uint8_t* daswasm_ary_dataAt(DasAry* pAry, const int* pLoc, int nLoc)
 {
 	ptrdiff_t aLoc[DASIDX_MAX];
-	size_t uVals = 0;
+	ptrdiff_t nVals = 0;
 	if(_daswasm_loc(pAry, pLoc, nLoc, aLoc) < 0)
 		return NULL;
-	return DasAry_valsIn(pAry, DasAry_vt(pAry), nLoc, aLoc, &uVals);
+	return DasAry_valsIn(pAry, DasAry_vt(pAry), nLoc, aLoc, &nVals);
 }
 
 double* daswasm_ary_times(DasAry* pAry)
 {
-	size_t uVals = 0;
+	ptrdiff_t nVals = 0;
 	if(DasAry_vt(pAry) != DASVT_TIME)
 		return NULL;
-	const DasTime* pTimes = DasAry_timesIn(pAry, DAS_ADDR0, &uVals);
+	const DasTime* pTimes = DasAry_timesIn(pAry, DAS_ADDR0, &nVals);
 
 	/* An empty time array (header landed, no data yet) has no element
 	 * pointer, and malloc(0) may legally return NULL too.  Neither is a
-	 * failure, so hand back a real buffer of zero useful doubles. */
-	if((pTimes == NULL)&&(DasAry_size(pAry) != 0))
+	 * failure, so hand back a real buffer of zero useful doubles.  The
+	 * count tells the two apart: negative is a failure, 0 is empty. */
+	if(nVals < 0)
 		return NULL;
-	if(pTimes == NULL)
-		uVals = 0;
+	size_t uVals = (pTimes == NULL) ? 0 : (size_t)nVals;
 
 	double* pOut = (double*)malloc((uVals > 0 ? uVals : 1) * sizeof(double));
 	if(pOut == NULL){
@@ -524,12 +530,11 @@ double* daswasm_ary_doubles(DasAry* pAry, const uint8_t* pRef, double rScale)
 
 	/* Same empty-array contract as daswasm_ary_times: a header with no
 	   records yet is not an error, answer with a real (if useless) buffer */
-	size_t uVals = 0;
-	const uint8_t* pData = DasAry_valsIn(pAry, vt, DAS_ADDR0, &uVals);
-	if((pData == NULL)&&(DasAry_size(pAry) != 0))
+	ptrdiff_t nVals = 0;
+	const uint8_t* pData = DasAry_valsIn(pAry, vt, DAS_ADDR0, &nVals);
+	if(nVals < 0)
 		return NULL;
-	if(pData == NULL)
-		uVals = 0;
+	size_t uVals = (pData == NULL) ? 0 : (size_t)nVals;
 
 	double* pOut = (double*)malloc((uVals > 0 ? uVals : 1) * sizeof(double));
 	if(pOut == NULL){
@@ -1278,6 +1283,17 @@ static void _jb_srcProp(JBuf* b, const DasSrcProp* p)
 	_jb_key(b, "typeName"); _jb_str(b, DasSrcProp_typeName(p));
 	_jb_key(b, "units");    _jb_str(b, DasSrcProp_units(p));
 	_jb_key(b, "value");    _jb_strOrNull(b, DasSrcProp_value(p));
+
+	/* A list property's bounds.  SIZE_MAX, "no limit", goes out as null:
+	   JSON numbers are doubles in JS and 2^32-1 is a poor stand in for
+	   "unbounded" there. */
+	size_t uMin = 1, uMax = 1;
+	bool bMulti = DasSrcProp_multi(p, &uMin, &uMax);
+	_jb_key(b, "multi");    _jb_bool(b, bMulti);
+	_jb_key(b, "minItems"); _jb_int(b, (long long)uMin);
+	_jb_key(b, "maxItems");
+	if(uMax == SIZE_MAX) _jb_null(b); else _jb_int(b, (long long)uMax);
+
 	_jb_key(b, "ctrl");     _jb_srcCtrl(b, DasSrcProp_ctrl(p));
 	_jb_raw(b, "}");
 }

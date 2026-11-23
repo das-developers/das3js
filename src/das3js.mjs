@@ -220,7 +220,9 @@ export class DasRuntime {
 			srcExLabel:    w('DasSrc_exampleLblAt', S, [N, N]),
 			srcNewReq:     f('new_DasReq_src', N, [N, N]),
 			srcMime:       w('DasSrc_mime', S, [N, N]),
-			srcUrl:        w('DasSrc_reqUrl', N, [N, N, N, N, N]),
+			/* f(): when no URL can be made das2C only logs why, and the why
+			 * is the one thing a form can tell the user, see #url() */
+			srcUrl:        f('DasSrc_reqUrl', N, [N, N, N, N, N]),
 			reqDel:        w('del_DasReq', null, [N]),
 			reqSet:        f('DasReq_set', N, [N, S, S]),
 			srcJson:       f('daswasm_src_json', N, [N]),
@@ -549,8 +551,15 @@ export class DasReader {
 	take()
 	{
 		const p = this.#d._c().rdrTake(this.#p);
-		if(p === 0)
-			throw new DasError('no stream to take: ' + this.#d.lastError());
+		if(p === 0){
+			/* A server with nothing to send may answer with one exception
+			 * packet and no stream header.  das2C counts "no data" as a
+			 * normal end, so no error was logged, and the exception text is
+			 * the only explanation there is. */
+			const ex = this.exception;
+			const why = this.#d.lastError() || ex || 'the input held no stream header';
+			throw new DasError('no stream to take: ' + why, ex);
+		}
 		this.#taken = true;
 		this.#strm = new DasStream(this.#d, p, true);
 		return this.#strm;
@@ -1826,9 +1835,9 @@ export class DasCatSource {
 
 		const req = this.#newReq(example, settings);
 		try{
-			const url = this.#url(req);
+			const {url, why} = this.#url(req);
 			if(url === '')
-				throw new DasError('no request URL for these settings, see the console log');
+				throw new DasError(`no request URL for these settings: ${why}`);
 			return {url, mime: c.srcMime(this.#p, req)};
 		}
 		finally{ c.reqDel(req); }
@@ -1890,8 +1899,12 @@ export class DasCatSource {
 	 * @param {number} [example] Start from this worked example; -1, the
 	 *        default, starts blank
 	 * @returns {{ok: boolean, bad: number, entries: Array, url: string,
-	 *        mime: string}} entries are {key, value, verdict, why, derived},
-	 *        verdict 'ok' or 'bad'.  url and mime are '' unless ok.
+	 *        mime: string, error?: string}} entries are {key, value,
+	 *        verdict, why, derived}, verdict 'ok' or 'bad'.  url and mime
+	 *        are '' unless ok.  error is present when every entry is good
+	 *        but no URL could be made, with das2C's reason: a rule about
+	 *        the whole request, or a node whose protocol section refuses a
+	 *        value its interface offers.
 	 * @throws {DasError} only when the request can't be built at all
 	 */
 	check(settings = {}, example = BLANK_REQ)
@@ -1908,9 +1921,16 @@ export class DasCatSource {
 			 * since _malloc may have grown the heap and detached old views. */
 			const bad = m.HEAP32[pBad >> 2];
 			const snap = takeJson(this.#d, c.reqJson(req));
-			const url = ok ? this.#url(req) : '';
+			const {url, why} = ok ? this.#url(req) : {url: '', why: ''};
 			const mime = ok ? c.srcMime(this.#p, req) : '';
-			return {ok: ok && (url !== ''), bad, entries: snap.entries, url, mime};
+			const res = {ok: ok && (url !== ''), bad, entries: snap.entries, url, mime};
+
+			/* Every entry can be good and still make no URL: the rule broken
+			 * is about the request as a whole, or about the node, such as a
+			 * value its protocol section doesn't list.  No entry carries that
+			 * reason, so it gets a field of its own. */
+			if(ok && url === '') res.error = why;
+			return res;
 		}
 		finally{
 			if(pBad) m._free(pBad);
@@ -1934,7 +1954,9 @@ export class DasCatSource {
 		return req;
 	}
 
-	/* The URL for a requisition, '' when the settings don't make one */
+	/* The URL for a requisition, {url, why}.  url is '' when the settings
+	 * don't make one, and why is then das2C's reason, from the log hook:
+	 * DasSrc_reqUrl() returns only 0 */
 	#url(req)
 	{
 		const c = this.#d._c();
@@ -1951,7 +1973,9 @@ export class DasCatSource {
 				buf = m._malloc(size);
 				n = c.srcUrl(this.#p, req, 0, buf, size);
 			}
-			return (n === 0) ? '' : cString(m, buf);
+			if(n === 0)
+				return {url: '', why: this.#d.lastError() || 'das2C gave no reason'};
+			return {url: cString(m, buf), why: ''};
 		}
 		finally{ m._free(buf); }
 	}

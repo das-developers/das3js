@@ -1,0 +1,45 @@
+{
+	"type": "HttpStreamSrc",
+	"version": "0.7",
+	"label": "enum_gap",
+	"title": "Hand made: a dasFlex style node whose protocol enum lacks a format its interface offers",
+	"protocol": {
+		"method": "GET",
+		"baseUrls": ["https://example.org/das/stream/source/enum_gap/flex"],
+		"httpParams": {
+			"read.time.min": {"required": true, "type": "isotime"},
+			"read.time.max": {"required": true, "type": "isotime"},
+			"format.type": {"required": false, "type": "enum", "enum": ["das", "ccsds"]}
+		}
+	},
+	"interface": {
+		"coords": {
+			"time": {
+				"label": "Time",
+				"props": {
+					"min": {"label": "Minimum", "value": null, "set": {"param": "read.time.min", "required": true}},
+					"max": {"label": "Maximum", "value": null, "set": {"param": "read.time.max", "required": true}},
+					"units": {"value": "UTC"}
+				}
+			}
+		},
+		"formats": {
+			"cdf": {
+				"label": "CDF file",
+				"mimeTypes": ["application/x-cdf"],
+				"props": {
+					"enabled": {"type": "boolean", "xorGroup": "format", "value": false,
+						"set": {"value": true, "param": "format.type", "pval": "cdf"}}
+				}
+			},
+			"das": {
+				"label": "das stream",
+				"mimeTypes": ["application/vnd.das.stream"],
+				"props": {
+					"enabled": {"type": "boolean", "xorGroup": "format", "value": true,
+						"set": {"value": true, "param": "format.type", "pval": "das"}}
+				}
+			}
+		}
+	}
+}

@@ -49,8 +49,10 @@
  *
  * Events, all bubbling and crossing the shadow boundary (composed):
  *
- *   das-change   detail {ok, bad, url, mime, settings}
+ *   das-change   detail {ok, bad, url, mime, error, settings}
  *                after every check.  url and mime are '' unless ok.
+ *                error, when present, is why no URL could be made though
+ *                no field is bad, and is shown in the form too.
  *   das-request  detail {url, mime, settings}
  *                the user submitted a good request
  *
@@ -105,6 +107,18 @@ function coordRank(p)
 	return (i < 0) ? COORD_ORDER.length : i;
 }
 
+/* A list property's hover text: how its items are given, and how many */
+function itemsHint(p)
+{
+	let s = 'A list: items separated by commas';
+	const lo = p.minItems, hi = p.maxItems;
+	if(hi !== null && lo === hi) s += `, exactly ${lo}`;
+	else if(lo > 0 && hi !== null) s += `, ${lo} to ${hi}`;
+	else if(lo > 0) s += `, at least ${lo}`;
+	else if(hi !== null) s += `, at most ${hi}`;
+	return s;
+}
+
 /* Data sections longer than this scroll inside their box */
 const SCROLL_AFTER = 12;
 
@@ -129,7 +143,11 @@ summary .now { font-weight: normal; color: var(--das-form-muted, #888); }
 .muted, .units, .echo, .range { color: var(--das-form-muted, #888); font-size: 0.9em; }
 .why { color: var(--das-form-error, #d33); font-size: 0.9em; flex-basis: 100%; }
 .why:empty { display: none; }
-input[aria-invalid=true], select[aria-invalid=true] {
+fieldset.multi {
+	display: inline-flex; flex-wrap: wrap; gap: 0.2em 0.9em;
+	border: none; margin: 0; padding: 0;
+}
+input[aria-invalid=true], select[aria-invalid=true], fieldset[aria-invalid=true] {
 	outline: 2px solid var(--das-form-error, #d33); outline-offset: 1px;
 }
 input[type=text] { font-family: inherit; }
@@ -207,7 +225,9 @@ export class DasSourceForm extends HTMLElement {
 	#form = null;         /* the source's form model, src.form */
 
 	/* key -> {prop, input, kind, why, echo, picker}.  kind is 'select',
-	 * 'check', 'text' or 'radio'; radio is a format's enable toggle. */
+	 * 'check', 'text', 'radio' or 'multi'; radio is a format's enable
+	 * toggle, multi a list drawn as check boxes, whose input is the
+	 * fieldset around them. */
 	#fields = new Map();
 	#groups = [];         /* {toggle, keys, box} for groups with an enable toggle */
 	#summaries = [];      /* functions that refresh the collapsed headings */
@@ -280,8 +300,7 @@ export class DasSourceForm extends HTMLElement {
 				if(!f.input.checked) continue;
 				val = 'true';
 			}
-			else if(f.kind === 'check') val = f.input.checked ? 'true' : 'false';
-			else val = f.input.value.trim();
+			else val = this.#valueOf(f);
 
 			/* An empty optional field means "server default": leave it out.
 			 * An empty required one stays, so das2C reports it missing. */
@@ -487,7 +506,22 @@ export class DasSourceForm extends HTMLElement {
 		let input, kind;
 		const def = this.#defaultOf(p);
 
-		if(p.ctrl.choices.length > 0){
+		if(p.multi && p.ctrl.choices.length > 0){
+			/* A list with its choices given: one check box per choice.  A
+			 * fieldset holds them because its disabled property turns off
+			 * every box inside at once, which is what #syncGroups needs, and
+			 * the input and change events of the boxes bubble up to it, so
+			 * the listeners below work unchanged. */
+			kind = 'multi';
+			input = el('fieldset', {className: 'multi'});
+			input.setAttribute('aria-label', p.label || p.name);
+			for(const c of p.ctrl.choices){
+				const box = el('input', {type: 'checkbox', value: c.value});
+				input.append(el('label', {}, box, ' ', c.label ?? c.value));
+			}
+			this.#writeMulti(input, def);
+		}
+		else if(p.ctrl.choices.length > 0){
 			kind = 'select';
 			input = el('select');
 			/* No default and not required: the server decides, say so */
@@ -504,7 +538,13 @@ export class DasSourceForm extends HTMLElement {
 		else{
 			kind = 'text';
 			input = el('input', {type: 'text', value: def, spellcheck: false, autocomplete: 'off'});
-			if(p.type === 'time'){
+			if(p.multi){
+				/* A list with no choices to offer: typed, comma separated,
+				 * the same text a requisition carries */
+				input.placeholder = 'a,b,...';
+				input.size = 16;
+			}
+			else if(p.type === 'time'){
 				input.placeholder = TIME_HINT;
 				input.size = 22;
 			}
@@ -522,6 +562,7 @@ export class DasSourceForm extends HTMLElement {
 			const [a, b] = p.ctrl.range;
 			tip += `${tip ? '\n' : ''}From ${a ?? 'any'} to ${b ?? 'any'}`;
 		}
+		if(p.multi) tip += `${tip ? '\n' : ''}${itemsHint(p)}`;
 		const id = `f-${p.key}`;
 		input.id = id;
 		if(tip) input.title = tip;
@@ -534,7 +575,10 @@ export class DasSourceForm extends HTMLElement {
 			if(p.title && p.title !== p.label) row.append(el('span', {className: 'muted'}, p.title));
 		}
 		else{
-			row.append(el('label', {className: 'flabel', for: id, title: tip}, richLabel(p.label || p.name)), input);
+			const cap = (kind === 'multi')
+				? el('span', {className: 'flabel', title: tip}, richLabel(p.label || p.name))
+				: el('label', {className: 'flabel', for: id, title: tip}, richLabel(p.label || p.name));
+			row.append(cap, input);
 			if(p.units && p.type !== 'time') row.append(el('span', {className: 'units'}, p.units));
 			if(p.type === 'time') row.append(el('span', {className: 'units'}, p.units || 'UTC'));
 		}
@@ -575,7 +619,33 @@ export class DasSourceForm extends HTMLElement {
 	#valueOf(f)
 	{
 		if(f.kind === 'check' || f.kind === 'radio') return f.input.checked ? 'true' : 'false';
+		if(f.kind === 'multi') return this.#readMulti(f.input);
 		return f.input.value.trim();
+	}
+
+	/* A list's check boxes as das2C's list text, "Ex,Ew".  Always in the
+	 * order the choices are drawn, not the order they were clicked, so the
+	 * same selection is always the same text. */
+	#readMulti(box)
+	{
+		return [...box.querySelectorAll('input:checked')].map(b => b.value).join(',');
+	}
+
+	/* The reverse: check the boxes a list's text names.  An item with no
+	 * box (das2C took it, the node doesn't list it) gets one, as a select
+	 * does for an unlisted value in #setField, so nothing is dropped
+	 * silently. */
+	#writeMulti(box, text)
+	{
+		const want = new Set(text.split(',').map(t => t.trim()).filter(t => t !== ''));
+		for(const b of box.querySelectorAll('input')){
+			b.checked = want.has(b.value);
+			want.delete(b.value);
+		}
+		for(const v of want){
+			const b = el('input', {type: 'checkbox', value: v, checked: true});
+			box.append(el('label', {}, b, ' ', v));
+		}
 	}
 
 	#reset()
@@ -583,6 +653,7 @@ export class DasSourceForm extends HTMLElement {
 		for(const f of this.#fields.values()){
 			const def = this.#defaultOf(f.prop);
 			if(f.kind === 'check' || f.kind === 'radio') f.input.checked = (def === 'true');
+			else if(f.kind === 'multi') this.#writeMulti(f.input, def);
 			else f.input.value = def;
 		}
 		this.#touched.clear();
@@ -598,6 +669,7 @@ export class DasSourceForm extends HTMLElement {
 			f.input.checked = /^(true|1|yes)$/i.test(val);
 			return;
 		}
+		if(f.kind === 'multi'){ this.#writeMulti(f.input, val); return; }
 		if(f.kind === 'select' && ![...f.input.options].some(o => o.value === val)){
 			/* das2C accepted it but it isn't listed; show it rather than
 			 * silently picking something else */
@@ -686,14 +758,18 @@ export class DasSourceForm extends HTMLElement {
 
 		this.#submitBtn.disabled = !res.ok;
 		this.#showUrl();
-		this.#emit('das-change', {ok: res.ok, bad: res.bad, url: res.url, mime: res.mime, settings});
+		this.#emit('das-change', {ok: res.ok, bad: res.bad, url: res.url, mime: res.mime,
+			error: res.error, settings});
 		return res;
 	}
 
 	#showUrl()
 	{
 		const res = this.#current;
-		this.#urlLine.hidden = !this.hasAttribute('show-url') || res === null;
+		/* A reason no field carries (res.error, say a format the node's
+		 * server side doesn't list) shows with or without show-url: it is
+		 * the only explanation of the disabled button the user gets */
+		this.#urlLine.hidden = (res === null) || !(this.hasAttribute('show-url') || res.error);
 		if(this.#urlLine.hidden) return;
 		this.#urlLine.className = res.ok ? 'url ok' : 'url';
 		if(res.ok){

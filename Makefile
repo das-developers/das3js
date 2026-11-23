@@ -58,7 +58,10 @@
 # make server     Start a node server at http://127.0.0.1:9099 with an index
 #                 of the test pages and tools, Ctrl-C stops the server.
 #                 Add RUNFLAGS=--dasflex to run the sibling ../dasflex
-#                 locally and point the pages at it.
+#                 locally and point the pages at it.  Add
+#                 RUNFLAGS=--catalog=DIR to serve a local copy of
+#                 das2.org/catalog/ (das-cat output) to the Catalog page's
+#                 ?internal=1 mode, over the test catalog.
 #
 # make dist       Stage the test pages, module and fixtures as a static site
 #                 in build.wasm32/site, ready to copy to a web server.  Add

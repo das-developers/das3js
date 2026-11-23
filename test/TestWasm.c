@@ -170,12 +170,12 @@ static int walkStream(DasStream* pSd, const char* sPath)
 
 						/* the pointer must be the decoder's own buffer: compare
 						   against a direct library call, no copies anywhere */
-						size_t uDirect = 0;
+						ptrdiff_t nDirect = 0;
 						const uint8_t* pDirect = DasAry_valsIn(
-							pAry, DasAry_vt(pAry), DAS_ADDR0, &uDirect
+							pAry, DasAry_vt(pAry), DAS_ADDR0, &nDirect
 						);
 						CHECK(daswasm_ary_data(pAry) == pDirect, "data pointer is not zero-copy");
-						CHECK((size_t)daswasm_ary_size(pAry) == uDirect, "element count mismatch");
+						CHECK((ptrdiff_t)daswasm_ary_size(pAry) == nDirect, "element count mismatch");
 
 						if(DasAry_vt(pAry) == DASVT_TEXT)
 							CHECK(daswasm_ary_textAt(pAry, 0) != NULL, "no first string");
