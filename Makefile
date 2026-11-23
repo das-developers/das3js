@@ -363,6 +363,7 @@ SITE=$(WBD)/site
 SITE_FIXTURES=ex01_polar_mfe.d2t ex04_voyager_pws_sa.d2s ex08_cassini_rpws_survey.d2t \
  ex09_juno_waves_survey.d2t ex17_vector_noframe.d3b ex19_cassini_ragged_wfrm.d3t \
  ex35_strings_rank2.d3b
+SITE_CATALOGS=juno_survey_0.6.json multi_0.7.json
 
 dist: module
 	rm -rf $(SITE)
@@ -372,7 +373,7 @@ dist: module
 	cp $(filter-out test/browser/run.mjs,$(wildcard test/browser/*.mjs)) $(SITE)/test/
 	cp test/browser/img/*.png test/browser/img/*.svg $(SITE)/test/img/
 	cp $(addprefix $(DAS2C)/examples/,$(SITE_FIXTURES)) $(SITE)/das2C/examples/
-	cp $(DAS2C)/test/das_fetch/juno_survey_0.6.json $(SITE)/das2C/test/das_fetch/
+	cp $(addprefix $(DAS2C)/test/das_fetch/,$(SITE_CATALOGS)) $(SITE)/das2C/test/das_fetch/
 	cp -r test/catalog $(SITE)/catalog
 	cp deploy/index.html $(SITE)/
 	cp deploy/htaccess $(SITE)/.htaccess
